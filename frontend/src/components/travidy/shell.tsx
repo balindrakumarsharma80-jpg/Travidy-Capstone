@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Home, Search, Briefcase, Heart, User, Compass } from "lucide-react";
+import { Home, Search, Briefcase, BookOpen, User, Compass } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
@@ -19,8 +19,8 @@ export function PhoneShell({ children }: { children: ReactNode }) {
 const tabs = [
   { to: "/", label: "Home", icon: Home },
   { to: "/explore", label: "Explore", icon: Search },
-  { to: "/planner", label: "My Trips", icon: Briefcase },
-  { to: "/saved", label: "Saved", icon: Heart },
+  { to: "/trips", label: "My Trips", icon: Briefcase },
+  { to: "/journal", label: "Journal", icon: BookOpen },
   { to: "/profile", label: "Profile", icon: User },
 ] as const;
 
@@ -32,7 +32,9 @@ function BottomNav() {
       <ul className="flex items-stretch justify-between px-2 pt-2 pb-3">
         {tabs.map(({ to, label, icon: Icon }) => {
           const active =
-            pathname === to || (to === "/planner" && pathname.startsWith("/itinerary"));
+            pathname === to ||
+            (to === "/trips" &&
+              (pathname.startsWith("/itinerary") || pathname.startsWith("/planner")));
           return (
             <li key={to} className="flex-1">
               <Link
@@ -63,9 +65,7 @@ export function TravidyLogo({ className }: { className?: string }) {
 }
 
 export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return (
-    <div className={cn("rounded-2xl bg-card p-4 shadow-card", className)}>{children}</div>
-  );
+  return <div className={cn("rounded-2xl bg-card p-4 shadow-card", className)}>{children}</div>;
 }
 
 export function Loading() {

@@ -66,11 +66,7 @@ export function AllDestinationsDialog(props: Props) {
       <ul className="grid grid-cols-2 gap-3">
         {destinations.map((d) => (
           <li key={d.id} className="overflow-hidden rounded-xl bg-card shadow-card">
-            <Link
-              to="/planner"
-              search={{ dest: d.id }}
-              onClick={() => props.onOpenChange(false)}
-            >
+            <Link to="/planner" search={{ dest: d.id }} onClick={() => props.onOpenChange(false)}>
               <img
                 src={img(d.imageKey)}
                 alt={d.name}

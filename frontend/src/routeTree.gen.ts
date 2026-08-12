@@ -10,15 +10,26 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthRouteImport } from './routes/auth'
 import { Route as ExploreRouteImport } from './routes/explore'
 import { Route as ItineraryRouteImport } from './routes/itinerary'
+import { Route as JournalRouteImport } from './routes/journal'
 import { Route as PlannerRouteImport } from './routes/planner'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SavedRouteImport } from './routes/saved'
+import { Route as TripsRouteImport } from './routes/trips'
+import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
+import { Route as SharedTokenRouteImport } from './routes/shared.$token'
+import { Route as TripsTripIdJoinRouteImport } from './routes/trips.$tripId.join'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthRoute = AuthRouteImport.update({
+  id: '/auth',
+  path: '/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExploreRoute = ExploreRouteImport.update({
@@ -29,6 +40,11 @@ const ExploreRoute = ExploreRouteImport.update({
 const ItineraryRoute = ItineraryRouteImport.update({
   id: '/itinerary',
   path: '/itinerary',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const JournalRoute = JournalRouteImport.update({
+  id: '/journal',
+  path: '/journal',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PlannerRoute = PlannerRouteImport.update({
@@ -46,55 +62,127 @@ const SavedRoute = SavedRouteImport.update({
   path: '/saved',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TripsRoute = TripsRouteImport.update({
+  id: '/trips',
+  path: '/trips',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
+  id: '/api/transcribe',
+  path: '/api/transcribe',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SharedTokenRoute = SharedTokenRouteImport.update({
+  id: '/shared/$token',
+  path: '/shared/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TripsTripIdJoinRoute = TripsTripIdJoinRouteImport.update({
+  id: '/$tripId/join',
+  path: '/$tripId/join',
+  getParentRoute: () => TripsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
   '/explore': typeof ExploreRoute
   '/itinerary': typeof ItineraryRoute
+  '/journal': typeof JournalRoute
   '/planner': typeof PlannerRoute
   '/profile': typeof ProfileRoute
   '/saved': typeof SavedRoute
+  '/trips': typeof TripsRouteWithChildren
+  '/api/transcribe': typeof ApiTranscribeRoute
+  '/shared/$token': typeof SharedTokenRoute
+  '/trips/$tripId/join': typeof TripsTripIdJoinRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
   '/explore': typeof ExploreRoute
   '/itinerary': typeof ItineraryRoute
+  '/journal': typeof JournalRoute
   '/planner': typeof PlannerRoute
   '/profile': typeof ProfileRoute
   '/saved': typeof SavedRoute
+  '/trips': typeof TripsRouteWithChildren
+  '/api/transcribe': typeof ApiTranscribeRoute
+  '/shared/$token': typeof SharedTokenRoute
+  '/trips/$tripId/join': typeof TripsTripIdJoinRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
   '/explore': typeof ExploreRoute
   '/itinerary': typeof ItineraryRoute
+  '/journal': typeof JournalRoute
   '/planner': typeof PlannerRoute
   '/profile': typeof ProfileRoute
   '/saved': typeof SavedRoute
+  '/trips': typeof TripsRouteWithChildren
+  '/api/transcribe': typeof ApiTranscribeRoute
+  '/shared/$token': typeof SharedTokenRoute
+  '/trips/$tripId/join': typeof TripsTripIdJoinRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/explore' | '/itinerary' | '/planner' | '/profile' | '/saved'
-  fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/explore' | '/itinerary' | '/planner' | '/profile' | '/saved'
-  id:
-    | '__root__'
     | '/'
+    | '/auth'
     | '/explore'
     | '/itinerary'
+    | '/journal'
     | '/planner'
     | '/profile'
     | '/saved'
+    | '/trips'
+    | '/api/transcribe'
+    | '/shared/$token'
+    | '/trips/$tripId/join'
+  fileRoutesByTo: FileRoutesByTo
+  to:
+    | '/'
+    | '/auth'
+    | '/explore'
+    | '/itinerary'
+    | '/journal'
+    | '/planner'
+    | '/profile'
+    | '/saved'
+    | '/trips'
+    | '/api/transcribe'
+    | '/shared/$token'
+    | '/trips/$tripId/join'
+  id:
+    | '__root__'
+    | '/'
+    | '/auth'
+    | '/explore'
+    | '/itinerary'
+    | '/journal'
+    | '/planner'
+    | '/profile'
+    | '/saved'
+    | '/trips'
+    | '/api/transcribe'
+    | '/shared/$token'
+    | '/trips/$tripId/join'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthRoute: typeof AuthRoute
   ExploreRoute: typeof ExploreRoute
   ItineraryRoute: typeof ItineraryRoute
+  JournalRoute: typeof JournalRoute
   PlannerRoute: typeof PlannerRoute
   ProfileRoute: typeof ProfileRoute
   SavedRoute: typeof SavedRoute
+  TripsRoute: typeof TripsRouteWithChildren
+  ApiTranscribeRoute: typeof ApiTranscribeRoute
+  SharedTokenRoute: typeof SharedTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -104,6 +192,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth': {
+      id: '/auth'
+      path: '/auth'
+      fullPath: '/auth'
+      preLoaderRoute: typeof AuthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/explore': {
@@ -118,6 +213,13 @@ declare module '@tanstack/react-router' {
       path: '/itinerary'
       fullPath: '/itinerary'
       preLoaderRoute: typeof ItineraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/journal': {
+      id: '/journal'
+      path: '/journal'
+      fullPath: '/journal'
+      preLoaderRoute: typeof JournalRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/planner': {
@@ -141,16 +243,59 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SavedRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/trips': {
+      id: '/trips'
+      path: '/trips'
+      fullPath: '/trips'
+      preLoaderRoute: typeof TripsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/transcribe': {
+      id: '/api/transcribe'
+      path: '/api/transcribe'
+      fullPath: '/api/transcribe'
+      preLoaderRoute: typeof ApiTranscribeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/shared/$token': {
+      id: '/shared/$token'
+      path: '/shared/$token'
+      fullPath: '/shared/$token'
+      preLoaderRoute: typeof SharedTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/trips/$tripId/join': {
+      id: '/trips/$tripId/join'
+      path: '/$tripId/join'
+      fullPath: '/trips/$tripId/join'
+      preLoaderRoute: typeof TripsTripIdJoinRouteImport
+      parentRoute: typeof TripsRoute
+    }
   }
 }
 
+interface TripsRouteChildren {
+  TripsTripIdJoinRoute: typeof TripsTripIdJoinRoute
+}
+
+const TripsRouteChildren: TripsRouteChildren = {
+  TripsTripIdJoinRoute: TripsTripIdJoinRoute,
+}
+
+const TripsRouteWithChildren = TripsRoute._addFileChildren(TripsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthRoute: AuthRoute,
   ExploreRoute: ExploreRoute,
   ItineraryRoute: ItineraryRoute,
+  JournalRoute: JournalRoute,
   PlannerRoute: PlannerRoute,
   ProfileRoute: ProfileRoute,
   SavedRoute: SavedRoute,
+  TripsRoute: TripsRouteWithChildren,
+  ApiTranscribeRoute: ApiTranscribeRoute,
+  SharedTokenRoute: SharedTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

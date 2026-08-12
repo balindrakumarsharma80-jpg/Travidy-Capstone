@@ -1,4 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { askTravidy } from "@/lib/rag.functions";
+
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -51,9 +53,11 @@ const DESTINATIONS = destinationCatalog.map((d) => ({
 }));
 
 export const Route = createFileRoute("/planner")({
-  validateSearch: (search: Record<string, unknown>) => ({
-    dest: typeof search['dest'] === "string" ? (search['dest'] as string) : undefined,
+  validateSearch: (search: Record<string, unknown>): { dest?: string; trip?: string } => ({
+    ...(typeof search["dest"] === "string" ? { dest: search["dest"] as string } : {}),
+    ...(typeof search["trip"] === "string" ? { trip: search["trip"] as string } : {}),
   }),
+
   head: () => ({
     meta: [
       { title: "AI Trip Planner — Travidy" },
@@ -71,9 +75,11 @@ export const Route = createFileRoute("/planner")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  loader: ({ context }) => {
-    context.queryClient.ensureQueryData(tripQuery());
-    context.queryClient.ensureQueryData(itineraryQuery());
+  loaderDeps: ({ search }) => ({ trip: search.trip }),
+  loader: ({ context, deps }) => {
+    const id = deps.trip ?? TRIP_ID;
+    context.queryClient.ensureQueryData(tripQuery(id));
+    context.queryClient.ensureQueryData(itineraryQuery(id));
   },
   component: Planner,
 });
@@ -85,15 +91,27 @@ const categoryStyle: Record<string, { icon: typeof BedDouble; tone: string }> = 
   restaurant: { icon: Utensils, tone: "bg-adventure-soft text-adventure" },
 };
 
-type Msg = { id: string; role: "user" | "ai"; text: string };
+/** A card the assistant proposes in reply to what the traveller actually asked for. */
+type Suggestion = {
+  name: string;
+  category: string;
+  subtitle: string;
+  price_label: string;
+  duration: string;
+  rating: number;
+  reviews: number;
+};
+
+type Msg = { id: string; role: "user" | "ai"; text: string; suggestions?: Suggestion[] };
 
 const uid = () => Math.random().toString(36).slice(2);
 
 function Planner() {
-  const { dest } = Route.useSearch();
+  const { dest, trip: tripParam } = Route.useSearch();
+  const tripId = tripParam ?? TRIP_ID;
   const qc = useQueryClient();
-  const { data: trip } = useSuspenseQuery(tripQuery());
-  const { data: itinerary = [] } = useSuspenseQuery(itineraryQuery());
+  const { data: trip } = useSuspenseQuery(tripQuery(tripId));
+  const { data: itinerary = [] } = useSuspenseQuery(itineraryQuery(tripId));
 
   // Conversation lives in the session only — every destination starts blank.
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -101,6 +119,7 @@ function Planner() {
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [addDay, setAddDay] = useState(1);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -119,6 +138,7 @@ function Planner() {
     setMessages([]);
     setShowRecs(false);
     setThinking(false);
+    setAddDay(1);
     if (destination) {
       setDetails({
         title: `${destination.name} Trip`,
@@ -136,29 +156,64 @@ function Planner() {
 
   const recs = useMemo<DestRec[]>(() => (dest ? (destinationRecs[dest] ?? []) : []), [dest]);
 
-  // Calls the real Travidy RAG chat Edge Function instead of hardcoded keyword matching.
-  async function aiReply(prompt: string): Promise<string> {
-    const { data, error } = await supabase.functions.invoke("chat", {
-      body: { question: prompt },
-    });
-    if (error) {
-      console.error("Chat function error:", error);
-      return "Sorry, I couldn't reach the travel assistant right now.";
+  const saveTrip = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from("trips")
+        .update({
+          title: details.title || `${destName} Trip`,
+          destination: destName || trip.destination,
+          days: Math.max(1, details.days),
+          travelers: Math.max(1, details.travelers),
+          travelers_label: `${details.travelers} Traveller${details.travelers > 1 ? "s" : ""}`,
+          budget: details.budget,
+        } as never)
+        .eq("id", tripId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["trip", tripId] });
+      setEditOpen(false);
+      toast.success("Trip details updated");
+    },
+    onError: () => toast.error("Couldn't save your trip details."),
+  });
+
+  function aiReply(prompt: string) {
+    const p = prompt.toLowerCase();
+    const d = destination;
+    if (!d) return "Tell me a bit more and I'll find the right places for you.";
+    if (p.includes("hotel") || p.includes("stay")) {
+      const hotel = recs.find((r) => r.category === "hotel");
+      return `${hotel?.name} ${hotel?.subtitle ? `(${hotel.subtitle})` : ""} is the best value in ${d.name} right now — ${hotel?.price_label}.`;
     }
-    return data?.answer ?? "Sorry, I couldn't generate an answer.";
+    if (p.includes("weather") || p.includes("time"))
+      return `The best window for ${d.name} is ${d.bestTime}. Pack light layers and something for the evenings.`;
+    if (p.includes("pack"))
+      return `For ${d.name} I'd pack comfortable shoes, quick-dry clothes, a power bank, sunscreen and a reusable bottle.`;
+    if (p.includes("budget") || p.includes("cost"))
+      return `Plan for about ${d.dailyBudget} in ${d.name}. A full trip usually lands near ${d.price}.`;
+    if (p.includes("food") || p.includes("eat") || p.includes("restaurant"))
+      return `Try ${d.food.join(" and ")} — both are local favourites and fit an easy budget.`;
+    if (p.includes("itinerary") || p.includes("plan"))
+      return `Here's a good shape for your days in ${d.name}: ${d.highlights.slice(0, 3).join(", ")}. Add any of the picks below and I'll slot them into your timeline.`;
+    const cat = d.categories[0]?.toLowerCase() ?? "";
+    if (cat && p.includes(cat))
+      return `${d.name} is made for that — start with ${d.highlights[0]}.`;
+    return `Here are my picks for ${d.name} — ${d.tagline} Tap Add on anything you like.`;
   }
 
   const add = useMutation({
-    mutationFn: async (rec: DestRec) => {
+    mutationFn: async (rec: Suggestion) => {
       const { error } = await supabase.from("itinerary_items").insert({
-        trip_id: TRIP_ID,
-        day: 1,
+        trip_id: tripId,
+        day: addDay,
         time_label: "Flexible",
         title: rec.name,
-        place: rec.subtitle,
+        place: rec.subtitle || null,
         category: rec.category,
         price_label: rec.price_label,
-        duration: rec.duration,
+        duration: rec.duration || null,
         status: "upcoming",
         image_key: destination?.imageKey ?? null,
         position: 99,
@@ -166,27 +221,68 @@ function Planner() {
       if (error) throw error;
     },
     onSuccess: (_d, rec) => {
-      qc.invalidateQueries({ queryKey: ["itinerary", TRIP_ID] });
-      toast.success(`${rec.name} added to your trip`);
+      qc.invalidateQueries({ queryKey: ["itinerary", tripId] });
+      toast.success(`${rec.name} added to day ${addDay}`);
     },
+
     onError: () => toast.error("Couldn't add that to your trip."),
   });
 
   const added = new Set(itinerary.map((i) => i.title));
-  const preview = itinerary.filter((i) => i.day === 1).slice(0, 3);
+  const preview = itinerary.slice(0, 3);
 
-  const submit = async (text: string) => {
+  const submit = (text: string) => {
     const value = text.trim();
     if (!value || thinking) return;
     setInput("");
     setMessages((m) => [...m, { id: uid(), role: "user", text: value }]);
     setThinking(true);
-    const answer = await aiReply(value);
-    setMessages((m) => [...m, { id: uid(), role: "ai", text: answer }]);
-    setThinking(false);
-    setShowRecs(true);
-    inputRef.current?.focus();
+    void (async () => {
+      let reply = "";
+      let suggestions: Suggestion[] = [];
+      try {
+        const res = await askTravidy({
+          data: { question: value, destination: destName || null },
+        });
+        reply = res.answer ?? "";
+        suggestions = (res.suggestions ?? []) as Suggestion[];
+      } catch {
+        reply = "";
+      }
+      // Fall back to the curated picks only when the model returned nothing usable.
+      if (!suggestions.length && !reply) {
+        suggestions = matchLocalRecs(value).map((r) => ({
+          name: r.name,
+          category: r.category,
+          subtitle: r.subtitle ?? "",
+          price_label: r.price_label ?? "Price varies",
+          duration: r.duration ?? "",
+          rating: Number(r.rating ?? 4.5),
+          reviews: Number(r.reviews ?? 0),
+        }));
+      }
+      setMessages((m) => [
+        ...m,
+        { id: uid(), role: "ai", text: reply || aiReply(value), suggestions },
+      ]);
+      setThinking(false);
+      setShowRecs(true);
+      inputRef.current?.focus();
+    })();
   };
+
+  /** Curated picks that actually match the request — never a generic dump. */
+  function matchLocalRecs(prompt: string): DestRec[] {
+    const p = prompt.toLowerCase();
+    const wants = (cat: string) => recs.filter((r) => r.category === cat);
+    if (/hotel|stay|hostel|resort|accommodation|room/.test(p)) return wants("hotel");
+    if (/food|eat|restaurant|cafe|café|dinner|lunch|breakfast/.test(p)) return wants("restaurant");
+    if (/adventure|sport|rafting|trek|bungee|zip|climb|kayak|paraglid|surf|dive/.test(p))
+      return wants("activity");
+    if (/temple|museum|fort|palace|sightsee|attraction|heritage|spiritual/.test(p))
+      return wants("attraction");
+    return [];
+  }
 
   const startVoice = () => {
     const SR =
@@ -221,9 +317,13 @@ function Planner() {
           <span className="flex items-center gap-2 font-display text-lg font-bold">
             <Sparkles className="size-5 text-primary" /> AI Trip Planner
           </span>
-          <span className="flex size-9 items-center justify-center rounded-full bg-muted">
+          <Link
+            to="/profile"
+            aria-label="Profile"
+            className="flex size-9 items-center justify-center rounded-full bg-muted"
+          >
             <User className="size-5 text-muted-foreground" />
-          </span>
+          </Link>
         </header>
 
         <div className="space-y-4 p-4">
@@ -277,15 +377,24 @@ function Planner() {
   return (
     <PhoneShell>
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-border bg-surface/95 px-4 py-3 backdrop-blur">
-        <Link to="/planner" aria-label="Back" search={{ dest: undefined }} className="text-foreground">
+        <Link
+          to="/planner"
+          aria-label="Back"
+          search={{ dest: undefined }}
+          className="text-foreground"
+        >
           <ArrowLeft className="size-6" />
         </Link>
         <span className="flex items-center gap-2 font-display text-lg font-bold">
           <Sparkles className="size-5 text-primary" /> AI Trip Planner
         </span>
-        <span className="flex size-9 items-center justify-center rounded-full bg-muted">
+        <Link
+          to="/profile"
+          aria-label="Profile"
+          className="flex size-9 items-center justify-center rounded-full bg-muted"
+        >
           <User className="size-5 text-muted-foreground" />
-        </span>
+        </Link>
       </header>
 
       <div className="space-y-4 p-4">
@@ -314,7 +423,11 @@ function Planner() {
                 label={`${details.days} Days`}
                 sub={destination?.bestTime ?? ""}
               />
-              <Fact icon={Users} label={`${details.travelers} Travelers`} sub={trip.travelers_label ?? ""} />
+              <Fact
+                icon={Users}
+                label={`${details.travelers} Travelers`}
+                sub={trip.travelers_label ?? ""}
+              />
               <Fact icon={Wallet} label="Budget" sub={inr(details.budget)} />
             </dl>
           </div>
@@ -348,6 +461,26 @@ function Planner() {
           </Card>
         )}
 
+        {showRecs && (
+          <div className="no-scrollbar flex items-center gap-2 overflow-x-auto text-xs">
+            <span className="shrink-0 font-semibold">Add to</span>
+            {Array.from({ length: Math.max(1, details.days) }, (_, i) => i + 1).map((d) => (
+              <button
+                key={d}
+                onClick={() => setAddDay(d)}
+                aria-pressed={addDay === d}
+                className={`shrink-0 rounded-full px-3 py-1.5 font-semibold ${
+                  addDay === d
+                    ? "bg-primary text-primary-foreground"
+                    : "border border-border bg-card text-muted-foreground"
+                }`}
+              >
+                Day {d}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="space-y-3">
           {messages.length === 0 && !thinking && (
             <div className="rounded-2xl border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
@@ -365,16 +498,90 @@ function Planner() {
                 </span>
               </div>
             ) : (
-              <div key={m.id} className="flex items-end gap-2">
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary-soft">
-                  <Sparkles className="size-4 text-primary" />
-                </span>
-                <p className="max-w-[78%] rounded-2xl rounded-bl-md bg-card px-4 py-3 text-sm shadow-card whitespace-pre-wrap">
-                  {m.text}
-                </p>
+              <div key={m.id} className="space-y-3">
+                <div className="flex items-end gap-2">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary-soft">
+                    <Sparkles className="size-4 text-primary" />
+                  </span>
+                  <p className="max-w-[78%] rounded-2xl rounded-bl-md bg-card px-4 py-3 text-sm shadow-card">
+                    {m.text}
+                  </p>
+                </div>
+                {!!m.suggestions?.length && (
+                  <ul className="space-y-3 pl-10">
+                    {m.suggestions.map((r, idx) => {
+                      const style = categoryStyle[r.category] ?? {
+                        icon: Landmark,
+                        tone: "bg-ai-soft text-ai",
+                      };
+                      const Icon = style.icon;
+                      const isAdded = added.has(r.name);
+                      return (
+                        <li
+                          key={`${m.id}-${idx}`}
+                          className="flex items-center gap-3 rounded-2xl bg-card p-3 shadow-card"
+                        >
+                          <img
+                            src={img(destination?.imageKey ?? dest)}
+                            alt={r.name}
+                            loading="lazy"
+                            width={160}
+                            height={160}
+                            className="size-16 shrink-0 rounded-xl object-cover"
+                          />
+                          <span
+                            className={`flex size-9 shrink-0 items-center justify-center rounded-full ${style.tone}`}
+                          >
+                            <Icon className="size-4" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <h3 className="truncate text-sm">{r.name}</h3>
+                            {r.subtitle && (
+                              <p className="truncate text-xs text-muted-foreground">{r.subtitle}</p>
+                            )}
+                            <p className="mt-0.5 text-xs font-semibold">
+                              {r.price_label}
+                              {r.duration && (
+                                <span className="font-normal text-muted-foreground">
+                                  {" "}
+                                  • {r.duration}
+                                </span>
+                              )}
+                            </p>
+                            {r.rating > 0 && (
+                              <p className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
+                                <Star className="size-3 fill-primary text-primary" />
+                                <span className="font-semibold text-foreground">{r.rating}</span>
+                                {r.reviews > 0 && <>({r.reviews} reviews)</>}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => add.mutate(r)}
+                            disabled={isAdded || add.isPending}
+                            className={`shrink-0 rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${
+                              isAdded
+                                ? "border-transparent bg-primary-soft text-accent-foreground"
+                                : "border-primary text-primary"
+                            }`}
+                          >
+                            {isAdded ? (
+                              <span className="flex items-center gap-1">
+                                <Check className="size-3.5" /> Added
+                              </span>
+                            ) : (
+                              "Add"
+                            )}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
             ),
           )}
+
           {thinking && (
             <div className="flex items-center gap-2 pl-10 text-sm text-muted-foreground">
               <Sparkles className="size-4 animate-pulse text-primary" /> Finding the perfect
@@ -384,66 +591,12 @@ function Planner() {
           <div ref={endRef} />
         </div>
 
-        {showRecs && recs.length > 0 && (
-          <ul className="space-y-3">
-            {recs.map((r) => {
-              const style = categoryStyle[r.category] ?? {
-                icon: Landmark,
-                tone: "bg-ai-soft text-ai",
-              };
-              const Icon = style.icon;
-              const isAdded = added.has(r.name);
-              return (
-                <li key={r.id} className="flex items-center gap-3 rounded-2xl bg-card p-3 shadow-card">
-                  <img
-                    src={img(destination?.imageKey ?? dest)}
-                    alt={r.name}
-                    loading="lazy"
-                    width={160}
-                    height={160}
-                    className="size-16 shrink-0 rounded-xl object-cover"
-                  />
-                  <span
-                    className={`flex size-9 shrink-0 items-center justify-center rounded-full ${style.tone}`}
-                  >
-                    <Icon className="size-4" />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="truncate text-sm">{r.name}</h3>
-                    <p className="truncate text-xs text-muted-foreground">{r.subtitle}</p>
-                    <p className="mt-0.5 text-xs font-semibold">
-                      {r.price_label}
-                      {r.duration && (
-                        <span className="font-normal text-muted-foreground"> • {r.duration}</span>
-                      )}
-                    </p>
-                    <p className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground">
-                      <Star className="size-3 fill-primary text-primary" />
-                      <span className="font-semibold text-foreground">{r.rating}</span> ({r.reviews}{" "}
-                      reviews)
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => add.mutate(r)}
-                    disabled={isAdded || add.isPending}
-                    className={`shrink-0 rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${
-                      isAdded
-                        ? "border-transparent bg-primary-soft text-accent-foreground"
-                        : "border-primary text-primary"
-                    }`}
-                  >
-                    {isAdded ? (
-                      <span className="flex items-center gap-1">
-                        <Check className="size-3.5" /> Added
-                      </span>
-                    ) : (
-                      "Add"
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+        {showRecs && (
+          <p className="text-xs text-muted-foreground">
+            Suggestions are added to{" "}
+            <span className="font-semibold text-foreground">Day {addDay}</span> — change it above
+            before tapping Add.
+          </p>
         )}
 
         <div>
@@ -623,12 +776,7 @@ function Planner() {
             </div>
           </div>
           <DialogFooter>
-            <Button
-              onClick={() => {
-                setEditOpen(false);
-                toast.success("Trip details updated");
-              }}
-            >
+            <Button onClick={() => saveTrip.mutate()} disabled={saveTrip.isPending}>
               Save changes
             </Button>
           </DialogFooter>
@@ -638,15 +786,7 @@ function Planner() {
   );
 }
 
-function Fact({
-  icon: Icon,
-  label,
-  sub,
-}: {
-  icon: typeof Calendar;
-  label: string;
-  sub: string;
-}) {
+function Fact({ icon: Icon, label, sub }: { icon: typeof Calendar; label: string; sub: string }) {
   return (
     <div className="flex items-start gap-1.5">
       <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />

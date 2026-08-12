@@ -40,9 +40,16 @@ export type Trip = {
   end_date: string;
   days: number;
   travelers: number;
+  travellers: number;
   travelers_label: string | null;
   budget: number;
   spent: number;
+  budget_amount: number;
+  spent_amount: number;
+  budget_tier: string | null;
+  status: string;
+  share_token: string;
+  user_id: string | null;
   weather: string | null;
 };
 
@@ -77,6 +84,7 @@ export type ChecklistItem = {
   label: string;
   done: boolean;
   position: number;
+  order_index: number;
 };
 
 export type ChatMessage = {
@@ -92,52 +100,77 @@ async function unwrap<T>(p: PromiseLike<{ data: T | null; error: unknown }>): Pr
   return (data ?? []) as T;
 }
 
-export const tripQuery = () =>
+export const tripQuery = (tripId: string = TRIP_ID) =>
   queryOptions({
-    queryKey: ["trip", TRIP_ID],
+    queryKey: ["trip", tripId],
     queryFn: async () => {
-      return {
-        id: TRIP_ID,
-        title: "Rishikesh Trip",
-        destination: "Rishikesh",
-        region: "Uttarakhand",
-        start_date: "2026-08-10",
-        end_date: "2026-08-12",
-        days: 3,
-        travelers: 2,
-        travelers_label: "2 Adults",
-        budget: 20000,
-        spent: 0,
-        weather: null,
-      } as Trip;
+      const { data, error } = await supabase.from("trips").select("*").eq("id", tripId).single();
+      if (error) throw error;
+      return data as unknown as Trip;
     },
   });
 
-export const recommendationsQuery = () =>
+export const recommendationsQuery = (tripId: string = TRIP_ID) =>
   queryOptions({
-    queryKey: ["recommendations", TRIP_ID],
-    queryFn: async () => [] as Recommendation[],
+    queryKey: ["recommendations", tripId],
+    queryFn: () =>
+      unwrap<Recommendation[]>(
+        supabase
+          .from("recommendations")
+          .select("*")
+          .eq("trip_id", tripId)
+          .order("position") as never,
+      ),
   });
 
-export const itineraryQuery = () =>
+export const itineraryQuery = (tripId: string = TRIP_ID) =>
   queryOptions({
-    queryKey: ["itinerary", TRIP_ID],
-    queryFn: async () => [] as ItineraryItem[],
+    queryKey: ["itinerary", tripId],
+    queryFn: () =>
+      unwrap<ItineraryItem[]>(
+        supabase
+          .from("itinerary_items")
+          .select("*")
+          .eq("trip_id", tripId)
+          .order("day")
+          .order("position") as never,
+      ),
   });
 
-export const checklistQuery = () =>
+export const checklistQuery = (tripId: string = TRIP_ID) =>
   queryOptions({
-    queryKey: ["checklist", TRIP_ID],
-    queryFn: async () => [] as ChecklistItem[],
+    queryKey: ["checklist", tripId],
+    queryFn: () =>
+      unwrap<ChecklistItem[]>(
+        supabase
+          .from("checklist_items")
+          .select("*")
+          .eq("trip_id", tripId)
+          .order("order_index") as never,
+      ),
   });
 
-export const chatQuery = () =>
+export const chatQuery = (tripId: string = TRIP_ID) =>
   queryOptions({
-    queryKey: ["chat", TRIP_ID],
-    queryFn: async () => [] as ChatMessage[],
+    queryKey: ["chat", tripId],
+    queryFn: () =>
+      unwrap<ChatMessage[]>(
+        supabase
+          .from("chat_messages")
+          .select("*")
+          .eq("trip_id", tripId)
+          .order("created_at") as never,
+      ),
   });
 
 export const inr = (n: number) => "₹" + n.toLocaleString("en-IN");
+
+/** Best-effort numeric value from a price label like "₹1,200 / night" or "Free". */
+export const priceValue = (label: string | null | undefined) => {
+  if (!label) return 0;
+  const match = label.replace(/,/g, "").match(/\d+(\.\d+)?/);
+  return match ? Math.round(Number(match[0])) : 0;
+};
 
 export const dayLabel = (start: string, day: number) => {
   const d = new Date(start);

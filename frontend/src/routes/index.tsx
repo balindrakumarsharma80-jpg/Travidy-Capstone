@@ -18,6 +18,7 @@ import {
 import { PhoneShell, Card } from "@/components/travidy/shell";
 import { AppHeader } from "@/components/travidy/app-header";
 import { AllDestinationsDialog, HowItWorksDialog } from "@/components/travidy/dialogs";
+import { DemoVideoDialog } from "@/components/travidy/demo-video-dialog";
 import { destinations as destinationCatalog } from "@/lib/destinations";
 import { usePrefs } from "@/lib/prefs";
 import { tripQuery, img } from "@/lib/travidy";
@@ -51,7 +52,6 @@ const steps = [
   { icon: ListChecks, label: "Follow\nChecklist", tone: "bg-adventure-soft text-adventure" },
 ];
 
-
 const trust = [
   {
     icon: Building2,
@@ -84,6 +84,7 @@ function Home() {
   const { prefs, toggleSaved } = usePrefs();
   const [howOpen, setHowOpen] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
+  const [demoOpen, setDemoOpen] = useState(false);
 
   return (
     <PhoneShell>
@@ -117,7 +118,10 @@ function Home() {
             >
               Start Planning <ArrowRight className="size-4" />
             </Link>
-            <button className="inline-flex items-center gap-2 rounded-full bg-surface px-5 py-3 text-sm font-semibold shadow-card">
+            <button
+              onClick={() => setDemoOpen(true)}
+              className="inline-flex items-center gap-2 rounded-full bg-surface px-5 py-3 text-sm font-semibold shadow-card"
+            >
               <PlayCircle className="size-4 text-primary" /> Watch Demo
             </button>
           </div>
@@ -128,19 +132,14 @@ function Home() {
         <Card>
           <div className="flex items-center justify-between">
             <h2 className="text-base">How Travidy Works</h2>
-            <button
-              onClick={() => setHowOpen(true)}
-              className="text-xs font-semibold text-primary"
-            >
+            <button onClick={() => setHowOpen(true)} className="text-xs font-semibold text-primary">
               View all
             </button>
           </div>
           <ol className="mt-4 flex items-start justify-between gap-1">
             {steps.map(({ icon: Icon, label, tone }, i) => (
               <li key={label} className="flex flex-1 flex-col items-center text-center">
-                <span
-                  className={`flex size-12 items-center justify-center rounded-full ${tone}`}
-                >
+                <span className={`flex size-12 items-center justify-center rounded-full ${tone}`}>
                   <Icon className="size-5" />
                 </span>
                 <span className="mt-2 flex size-4 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
@@ -210,7 +209,6 @@ function Home() {
         </ul>
       </section>
 
-
       <section className="mt-6 px-4">
         <h2 className="text-lg">Why Trust Travidy?</h2>
         <ul className="mt-3 grid grid-cols-2 gap-3">
@@ -232,7 +230,7 @@ function Home() {
         <div className="rounded-2xl bg-primary-soft p-4">
           <h2 className="text-lg text-accent-foreground">Ready to travel smarter?</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Let Travidy plan your {trip.destination} trip — {trip.days} days, your budget.
+            Pick a destination and Travidy builds the days, the stays and the budget with you.
           </p>
           <Link
             to="/planner"
@@ -246,6 +244,7 @@ function Home() {
 
       <HowItWorksDialog open={howOpen} onOpenChange={setHowOpen} />
       <AllDestinationsDialog open={allOpen} onOpenChange={setAllOpen} />
+      <DemoVideoDialog open={demoOpen} onOpenChange={setDemoOpen} />
     </PhoneShell>
   );
 }

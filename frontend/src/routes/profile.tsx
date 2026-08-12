@@ -1,6 +1,17 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery } from "@tanstack/react-query";
-import { Bell, ChevronRight, Globe, Heart, LifeBuoy, Sparkles, User, Wallet } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useQueryClient, useSuspenseQuery, useQuery } from "@tanstack/react-query";
+import {
+  Bell,
+  ChevronRight,
+  Globe,
+  Heart,
+  LifeBuoy,
+  LogIn,
+  LogOut,
+  Sparkles,
+  User,
+  Wallet,
+} from "lucide-react";
 import { useState } from "react";
 
 import { PhoneShell, Card } from "@/components/travidy/shell";
@@ -12,8 +23,24 @@ import {
   NotificationsDialog,
   SupportDialog,
 } from "@/components/travidy/dialogs";
+import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { usePrefs } from "@/lib/prefs";
+import { myTripsQuery } from "@/lib/trips";
 import { tripQuery } from "@/lib/travidy";
+import { useAuth } from "@/hooks/use-auth";
+import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/profile")({
   head: () => ({
@@ -45,13 +72,53 @@ const budgetLabels: Record<string, string> = {
 
 function Profile() {
   const { data: trip } = useSuspenseQuery(tripQuery());
-  const { prefs } = usePrefs();
+  const { prefs, setPrefs } = usePrefs();
+  const [details, setDetails] = useState({
+    fullName: prefs.fullName,
+    homeCity: prefs.homeCity,
+    travelStyle: prefs.travelStyle,
+  });
   const [open, setOpen] = useState<string | null>(null);
   const close = () => setOpen(null);
+  const { user, isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const { data: profile } = useQuery({
+    queryKey: ["profile", user?.id],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("display_name, avatar_url")
+        .eq("id", user!.id)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  async function signOut() {
+    await queryClient.cancelQueries();
+    queryClient.clear();
+    await supabase.auth.signOut();
+    navigate({ to: "/auth", replace: true });
+  }
+
+  const displayName = profile?.display_name ?? user?.email?.split("@")[0] ?? "Explorer";
 
   const activeAlerts = Object.values(prefs.notifications).filter(Boolean).length;
 
+  const { data: myTrips = [] } = useQuery(myTripsQuery(user?.id));
+  const daysAway = myTrips.reduce((sum, t) => sum + t.days, 0) || trip.days;
+
   const rows = [
+    {
+      key: "details",
+      icon: User,
+      label: "Personal details",
+      value: prefs.fullName || "Add your details",
+    },
     { key: "notifications", icon: Bell, label: "Notifications", value: `${activeAlerts} active` },
     {
       key: "budget",
@@ -75,19 +142,41 @@ function Profile() {
         <h1 className="text-2xl">Profile</h1>
 
         <Card className="flex items-center gap-3">
-          <span className="flex size-14 items-center justify-center rounded-full bg-primary-soft">
-            <User className="size-7 text-primary" />
-          </span>
-          <div>
-            <h2 className="text-base">Explorer</h2>
-            <p className="text-xs text-muted-foreground">1 trip planned • {trip.title}</p>
+          {profile?.avatar_url ? (
+            <img
+              src={profile.avatar_url}
+              alt={`${displayName} avatar`}
+              width={56}
+              height={56}
+              loading="lazy"
+              className="size-14 rounded-full object-cover"
+            />
+          ) : (
+            <span className="flex size-14 items-center justify-center rounded-full bg-primary-soft">
+              <User className="size-7 text-primary" />
+            </span>
+          )}
+          <div className="min-w-0">
+            <h2 className="truncate text-base">{displayName}</h2>
+            <p className="truncate text-xs text-muted-foreground">
+              {isAuthenticated ? user?.email : `Sign in to sync • ${trip.title}`}
+            </p>
           </div>
         </Card>
 
+        {!isAuthenticated && (
+          <Link
+            to="/auth"
+            className="flex w-full items-center justify-center gap-2 rounded-2xl bg-primary py-3 text-xs font-bold text-primary-foreground shadow-card"
+          >
+            <LogIn className="size-4" /> Sign in to sync your trips
+          </Link>
+        )}
+
         <ul className="grid grid-cols-3 gap-3">
-          <Stat label="Trips" value="1" />
+          <Stat label="Trips" value={String(myTrips.length)} />
           <Stat label="Saved" value={String(prefs.saved.length)} icon={Heart} />
-          <Stat label="Days away" value={String(trip.days)} />
+          <Stat label="Days away" value={String(daysAway)} />
         </ul>
 
         <Card className="divide-y divide-border p-0">
@@ -115,7 +204,76 @@ function Profile() {
         >
           <Sparkles className="size-4 text-primary" /> How Travidy Works
         </button>
+
+        {isAuthenticated && (
+          <button
+            onClick={signOut}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-border py-3 text-xs font-bold text-muted-foreground"
+          >
+            <LogOut className="size-4" /> Sign out
+          </button>
+        )}
       </div>
+
+      <Dialog
+        open={open === "details"}
+        onOpenChange={(v) => {
+          if (!v) close();
+        }}
+      >
+        <DialogContent className="max-w-[380px] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>Personal details</DialogTitle>
+            <DialogDescription>Saved to your Travidy profile.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="p-name">Full name</Label>
+              <Input
+                id="p-name"
+                value={details.fullName}
+                onChange={(e) => setDetails((d) => ({ ...d, fullName: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="p-city">Home city</Label>
+              <Input
+                id="p-city"
+                value={details.homeCity}
+                onChange={(e) => setDetails((d) => ({ ...d, homeCity: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="p-style">Travel style</Label>
+              <select
+                id="p-style"
+                value={details.travelStyle}
+                onChange={(e) => setDetails((d) => ({ ...d, travelStyle: e.target.value }))}
+                className="h-10 w-full rounded-xl border border-border bg-background px-3 text-sm"
+              >
+                {["Balanced", "Adventure", "Spiritual", "Relaxed", "Culture", "Nightlife"].map(
+                  (o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ),
+                )}
+              </select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              onClick={() => {
+                setPrefs(details);
+                toast.success("Profile updated");
+                close();
+              }}
+            >
+              Save details
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <NotificationsDialog open={open === "notifications"} onOpenChange={close} />
       <BudgetPreferenceDialog open={open === "budget"} onOpenChange={close} />
@@ -126,15 +284,7 @@ function Profile() {
   );
 }
 
-function Stat({
-  label,
-  value,
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  icon?: typeof Heart;
-}) {
+function Stat({ label, value, icon: Icon }: { label: string; value: string; icon?: typeof Heart }) {
   return (
     <li className="rounded-2xl bg-card p-3 text-center shadow-card">
       <p className="flex items-center justify-center gap-1 font-display text-lg font-bold text-primary">
