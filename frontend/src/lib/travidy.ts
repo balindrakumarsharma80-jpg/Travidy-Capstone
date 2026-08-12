@@ -13,7 +13,6 @@ import manali from "@/assets/manali.jpg";
 import kerala from "@/assets/kerala.jpg";
 
 export const TRIP_ID = "11111111-1111-1111-1111-111111111111";
-
 export const images: Record<string, string> = {
   rishikesh,
   goa,
@@ -100,17 +99,35 @@ async function unwrap<T>(p: PromiseLike<{ data: T | null; error: unknown }>): Pr
   return (data ?? []) as T;
 }
 
-export const tripQuery = (tripId: string = TRIP_ID) =>
+export const tripQuery = () =>
   queryOptions({
-    queryKey: ["trip", tripId],
+    queryKey: ["trip", "current-user"],
     queryFn: async () => {
-      const { data, error } = await supabase.from("trips").select("*").eq("id", tripId).single();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const user = session?.user;
+
+      if (!user) {
+        return null;
+      }
+
+      const { data, error } = await supabase
+        .from("trips")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
       if (error) throw error;
-      return data as unknown as Trip;
+
+      return data as unknown as Trip | null;
     },
   });
 
-export const recommendationsQuery = (tripId: string = TRIP_ID) =>
+export const recommendationsQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["recommendations", tripId],
     queryFn: () =>
@@ -123,7 +140,7 @@ export const recommendationsQuery = (tripId: string = TRIP_ID) =>
       ),
   });
 
-export const itineraryQuery = (tripId: string = TRIP_ID) =>
+export const itineraryQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["itinerary", tripId],
     queryFn: () =>
@@ -137,7 +154,7 @@ export const itineraryQuery = (tripId: string = TRIP_ID) =>
       ),
   });
 
-export const checklistQuery = (tripId: string = TRIP_ID) =>
+export const checklistQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["checklist", tripId],
     queryFn: () =>
@@ -150,7 +167,7 @@ export const checklistQuery = (tripId: string = TRIP_ID) =>
       ),
   });
 
-export const chatQuery = (tripId: string = TRIP_ID) =>
+export const chatQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["chat", tripId],
     queryFn: () =>
