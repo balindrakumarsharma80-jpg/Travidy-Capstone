@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { askTravidy } from "@/lib/rag.functions";
 
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -38,7 +38,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
-import { TRIP_ID, img, inr, itineraryQuery, tripQuery } from "@/lib/travidy";
+import {img, inr, itineraryQuery, tripQuery } from "@/lib/travidy";
+import { createTrip } from "@/lib/trips";
 import {
   destinations as destinationCatalog,
   destinationRecs,
@@ -77,10 +78,14 @@ export const Route = createFileRoute("/planner")({
   }),
   loaderDeps: ({ search }) => ({ trip: search.trip }),
   loader: ({ context, deps }) => {
-    const id = deps.trip ?? TRIP_ID;
-    context.queryClient.ensureQueryData(tripQuery(id));
-    context.queryClient.ensureQueryData(itineraryQuery(id));
-  },
+    if (deps.trip) {
+    return context.queryClient.ensureQueryData(
+      tripQuery(deps.trip)
+    );
+  }
+
+  return null;
+},
   component: Planner,
 });
 
@@ -108,10 +113,22 @@ const uid = () => Math.random().toString(36).slice(2);
 
 function Planner() {
   const { dest, trip: tripParam } = Route.useSearch();
-  const tripId = tripParam ?? TRIP_ID;
   const qc = useQueryClient();
-  const { data: trip } = useSuspenseQuery(tripQuery(tripId));
-  const { data: itinerary = [] } = useSuspenseQuery(itineraryQuery(tripId));
+
+const { data: trip = null } = useQuery({
+    ...tripQuery(tripParam ?? ""),
+    enabled: !!tripParam,
+  });
+
+
+
+const tripId = trip?.id;
+
+
+const { data: itinerary = [] } = useQuery(
+  itineraryQuery(tripId ?? "")
+);
+
 
   // Conversation lives in the session only — every destination starts blank.
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -125,7 +142,11 @@ function Planner() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const destination = findDestination(dest);
-  const destName = destination?.name ?? dest ?? "";
+ const destName =
+  destination?.name ??
+  dest ??
+  trip?.destination ??
+  "";
 
   const [details, setDetails] = useState({
     title: "",
@@ -135,19 +156,21 @@ function Planner() {
   });
 
   useEffect(() => {
-    setMessages([]);
-    setShowRecs(false);
-    setThinking(false);
-    setAddDay(1);
-    if (destination) {
-      setDetails({
-        title: `${destination.name} Trip`,
-        days: trip.days,
-        travelers: trip.travelers,
-        budget: trip.budget,
-      });
-    }
-  }, [dest, destination, trip.days, trip.travelers, trip.budget]);
+  if (!destination) return;
+
+  setDetails({
+    title: trip?.title || `${destination.name} Trip`,
+    days: trip?.days ?? 5,
+    travelers: trip?.travelers ?? 1,
+    budget: trip?.budget ?? destination.dailyBudget,
+  });
+}, [
+  destination,
+  trip?.title,
+  trip?.days,
+  trip?.travelers,
+  trip?.budget,
+]);
 
   useEffect(() => {
     if (messages.length || thinking)
@@ -162,7 +185,7 @@ function Planner() {
         .from("trips")
         .update({
           title: details.title || `${destName} Trip`,
-          destination: destName || trip.destination,
+          destination: destName || trip?.destination || "",
           days: Math.max(1, details.days),
           travelers: Math.max(1, details.travelers),
           travelers_label: `${details.travelers} Traveller${details.travelers > 1 ? "s" : ""}`,
@@ -204,30 +227,65 @@ function Planner() {
   }
 
   const add = useMutation({
-    mutationFn: async (rec: Suggestion) => {
-      const { error } = await supabase.from("itinerary_items").insert({
-        trip_id: tripId,
-        day: addDay,
-        time_label: "Flexible",
-        title: rec.name,
-        place: rec.subtitle || null,
-        category: rec.category,
-        price_label: rec.price_label,
-        duration: rec.duration || null,
-        status: "upcoming",
-        image_key: destination?.imageKey ?? null,
-        position: 99,
-      } as never);
-      if (error) throw error;
-    },
-    onSuccess: (_d, rec) => {
-      qc.invalidateQueries({ queryKey: ["itinerary", tripId] });
-      toast.success(`${rec.name} added to day ${addDay}`);
-    },
+  mutationFn: async (rec: Suggestion) => {
+    let currentTripId = tripId;
 
-    onError: () => toast.error("Couldn't add that to your trip."),
-  });
+    // No trip exists yet — create one for this destination.
+    if (!currentTripId) {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
 
+      if (userError) throw userError;
+      if (!user) throw new Error("Please sign in to create a trip.");
+      if (!destination) throw new Error("Please select a destination.");
+
+      const startDate = new Date();
+      const endDate = new Date(startDate);
+      endDate.setDate(startDate.getDate() + Math.max(1, details.days) - 1);
+
+      currentTripId = await createTrip({
+        userId: user.id,
+        destinationId: destination.id,
+        title: details.title || `${destination.name} Trip`,
+        startDate: startDate.toISOString().slice(0, 10),
+        endDate: endDate.toISOString().slice(0, 10),
+        travellers: Math.max(1, details.travelers),
+        budgetAmount: Math.max(0, details.budget),
+        budgetTier: "mid-range",
+        status: "draft",
+      });
+    }
+
+    const { error } = await supabase.from("itinerary_items").insert({
+      trip_id: currentTripId,
+      day: addDay,
+      time_label: "Flexible",
+      title: rec.name,
+      place: rec.subtitle || null,
+      category: rec.category,
+      price_label: rec.price_label,
+      duration: rec.duration || null,
+      status: "upcoming",
+      image_key: destination?.imageKey ?? null,
+      position: 99,
+    } as never);
+
+    if (error) throw error;
+
+    return { tripId: currentTripId };
+  },
+
+  onSuccess: ({ tripId: createdTripId }, rec) => {
+    qc.invalidateQueries({ queryKey: ["trip", createdTripId] });
+    qc.invalidateQueries({ queryKey: ["itinerary", createdTripId] });
+
+    toast.success(`${rec.name} added to day ${addDay}`);
+  },
+
+  onError: () => toast.error("Couldn't add that to your trip."),
+});
   const added = new Set(itinerary.map((i) => i.title));
   const preview = itinerary.slice(0, 3);
 
@@ -426,7 +484,7 @@ function Planner() {
               <Fact
                 icon={Users}
                 label={`${details.travelers} Travelers`}
-                sub={trip.travelers_label ?? ""}
+                sub={trip?.travelers_label ?? `${details.travelers} Traveller${details.travelers > 1 ? "s" : ""}`}
               />
               <Fact icon={Wallet} label="Budget" sub={inr(details.budget)} />
             </dl>

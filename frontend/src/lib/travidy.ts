@@ -66,16 +66,17 @@ export type Recommendation = {
 
 export type ItineraryItem = {
   id: string;
+  trip_id: string;
   day: number;
-  time_label: string;
-  title: string;
+  time_label: string | null;
+  title: string | null;
   place: string | null;
   category: string | null;
   price_label: string | null;
   duration: string | null;
-  status: string;
+  status: string | null;
   image_key: string | null;
-  position: number;
+  order_index: number | null;
 };
 
 export type ChecklistItem = {
@@ -99,26 +100,17 @@ async function unwrap<T>(p: PromiseLike<{ data: T | null; error: unknown }>): Pr
   return (data ?? []) as T;
 }
 
-export const tripQuery = () =>
+export const tripQuery = (tripId: string | undefined) =>
   queryOptions({
-    queryKey: ["trip", "current-user"],
+    queryKey: ["trip", tripId],
+    enabled: !!tripId,
     queryFn: async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      const user = session?.user;
-
-      if (!user) {
-        return null;
-      }
+      if (!tripId) return null;
 
       const { data, error } = await supabase
         .from("trips")
         .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(1)
+        .eq("id", tripId)
         .maybeSingle();
 
       if (error) throw error;
@@ -140,17 +132,29 @@ export const recommendationsQuery = (tripId: string) =>
       ),
   });
 
-export const itineraryQuery = (tripId: string) =>
+export const itineraryQuery = (tripId: string | undefined) =>
   queryOptions({
     queryKey: ["itinerary", tripId],
+    enabled: !!tripId,
     queryFn: () =>
       unwrap<ItineraryItem[]>(
         supabase
           .from("itinerary_items")
-          .select("*")
-          .eq("trip_id", tripId)
-          .order("day")
-          .order("position") as never,
+           .select(`
+            id,
+            trip_id,
+            day,
+            time_label:start_time,
+            title:place_name,
+            place:place_name,
+            category,
+            price_label,
+            status:item_status,
+            position:order_index
+          `)
+          .eq("trip_id", tripId!)
+          .order("day", { ascending: true })
+          .order("order_index", { ascending: true }) as never,
       ),
   });
 
