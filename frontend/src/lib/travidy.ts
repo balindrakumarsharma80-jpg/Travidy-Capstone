@@ -12,7 +12,6 @@ import ramjhula from "@/assets/ramjhula.jpg";
 import manali from "@/assets/manali.jpg";
 import kerala from "@/assets/kerala.jpg";
 
-export const TRIP_ID = "11111111-1111-1111-1111-111111111111";
 export const images: Record<string, string> = {
   rishikesh,
   goa,
@@ -39,12 +38,9 @@ export type Trip = {
   end_date: string;
   days: number;
   travelers: number;
-  travellers: number;
   travelers_label: string | null;
   budget: number;
   spent: number;
-  budget_amount: number;
-  spent_amount: number;
   budget_tier: string | null;
   status: string;
   share_token: string;
@@ -83,7 +79,6 @@ export type ChecklistItem = {
   label: string;
   done: boolean;
   position: number;
-  order_index: number;
 };
 
 export type ChatMessage = {
@@ -99,6 +94,27 @@ async function unwrap<T>(p: PromiseLike<{ data: T | null; error: unknown }>): Pr
   return (data ?? []) as T;
 }
 
+function daysBetween(start: string, end: string): number {
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  return Math.max(1, Math.round(ms / (1000 * 60 * 60 * 24)) + 1);
+}
+
+function formatTime(time: string | null): string {
+  if (!time) return "";
+  const [h, m] = time.split(":");
+  const hour = parseInt(h, 10);
+  const period = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}:${m} ${period}`;
+}
+
+// ---------------------------------------------------------------------------
+// Trip — reads the signed-in user's most recent trip. Genuinely trip-agnostic
+// (no hardcoded TRIP_ID) — this part of the Lovable-built version was
+// correct and is kept as-is, just with the destinations join added so
+// `destination`/`region` are actually populated instead of undefined.
+// ---------------------------------------------------------------------------
+
 export const tripQuery = () =>
   queryOptions({
     queryKey: ["trip", "current-user"],
@@ -108,81 +124,179 @@ export const tripQuery = () =>
       } = await supabase.auth.getSession();
 
       const user = session?.user;
-
-      if (!user) {
-        return null;
-      }
+      if (!user) return null;
 
       const { data, error } = await supabase
         .from("trips")
-        .select("*")
+        .select("*, destinations(name, state)")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (error) throw error;
+      if (!data) return null;
 
-      return data as unknown as Trip | null;
+      const destination = data.destinations as { name: string; state: string } | null;
+
+      return {
+        id: data.id,
+        title: data.title ?? "Untitled Trip",
+        destination: destination?.name ?? "Unknown destination",
+        region: destination?.state ?? null,
+        start_date: data.start_date,
+        end_date: data.end_date,
+        days: data.start_date && data.end_date ? daysBetween(data.start_date, data.end_date) : 1,
+        travelers: data.travellers ?? 1,
+        travelers_label: data.travellers ? `${data.travellers} ${data.travellers === 1 ? "Traveler" : "Travelers"}` : null,
+        budget: data.budget_amount ?? 0,
+        spent: data.spent_amount ?? 0,
+        budget_tier: data.budget_tier ?? null,
+        status: data.status,
+        share_token: data.share_token,
+        user_id: data.user_id,
+        weather: null,
+      } as Trip;
     },
   });
+
+// ---------------------------------------------------------------------------
+// Recommendations — NOT backed by any table (none exists — deliberate scope
+// decision, no recommendation engine). Recommendation cards in the Planner
+// come from the chat agent's live response, not a persisted query.
+// ---------------------------------------------------------------------------
 
 export const recommendationsQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["recommendations", tripId],
-    queryFn: () =>
-      unwrap<Recommendation[]>(
-        supabase
-          .from("recommendations")
-          .select("*")
-          .eq("trip_id", tripId)
-          .order("position") as never,
-      ),
+    queryFn: async () => [] as Recommendation[],
   });
+
+// ---------------------------------------------------------------------------
+// Itinerary — now trip-agnostic (takes tripId), using the REAL column names
+// (day_number, order_index — not day/position, which don't exist).
+// ---------------------------------------------------------------------------
 
 export const itineraryQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["itinerary", tripId],
-    queryFn: () =>
-      unwrap<ItineraryItem[]>(
+    queryFn: async () => {
+      const rows = await unwrap(
         supabase
           .from("itinerary_items")
           .select("*")
           .eq("trip_id", tripId)
-          .order("day")
-          .order("position") as never,
-      ),
+          .order("day_number", { ascending: true })
+          .order("order_index", { ascending: true })
+      );
+
+      return (rows as any[]).map((r) => ({
+        id: r.id,
+        day: r.day_number ?? 1,
+        time_label: formatTime(r.start_time),
+        title: r.place_name ?? r.notes ?? "Untitled",
+        place: r.place_name,
+        category: r.category,
+        price_label: r.price_label,
+        duration: null,
+        status: r.item_status ?? "planned",
+        image_key: null,
+        position: r.order_index ?? 0,
+      })) as ItineraryItem[];
+    },
   });
+
+// ---------------------------------------------------------------------------
+// Checklist — trip-agnostic, order_index was already correct in the
+// Lovable-built version.
+// ---------------------------------------------------------------------------
 
 export const checklistQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["checklist", tripId],
-    queryFn: () =>
-      unwrap<ChecklistItem[]>(
+    queryFn: async () => {
+      const rows = await unwrap(
         supabase
           .from("checklist_items")
           .select("*")
           .eq("trip_id", tripId)
-          .order("order_index") as never,
-      ),
+          .order("order_index", { ascending: true })
+      );
+
+      return (rows as any[]).map((r) => ({
+        id: r.id,
+        label: r.label,
+        done: r.done ?? false,
+        position: r.order_index ?? 0,
+      })) as ChecklistItem[];
+    },
   });
+
+export async function toggleChecklistItem(id: string, done: boolean) {
+  const { error } = await supabase.from("checklist_items").update({ done }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function addChecklistItem(tripId: string, label: string, position: number) {
+  const { error } = await supabase
+    .from("checklist_items")
+    .insert({ trip_id: tripId, label, order_index: position, done: false });
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Chat — fixed to use the REAL table (chat_history, not chat_messages),
+// now trip-agnostic. Also adds sendChatMessage, which was missing entirely
+// from the Lovable-built version — this is the actual call to the deployed
+// agent edge function.
+// ---------------------------------------------------------------------------
 
 export const chatQuery = (tripId: string) =>
   queryOptions({
     queryKey: ["chat", tripId],
-    queryFn: () =>
-      unwrap<ChatMessage[]>(
+    queryFn: async () => {
+      const rows = await unwrap(
         supabase
-          .from("chat_messages")
+          .from("chat_history")
           .select("*")
           .eq("trip_id", tripId)
-          .order("created_at") as never,
-      ),
+          .order("created_at", { ascending: true })
+      );
+
+      return (rows as any[]).map((r) => ({
+        id: r.id,
+        role: r.role === "assistant" ? "ai" : "user",
+        text: r.message,
+        created_at: r.created_at,
+      })) as ChatMessage[];
+    },
   });
+
+export async function sendChatMessage(
+  tripId: string,
+  question: string
+): Promise<{ answer: string; sources: { type: string; label: string }[] }> {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError || !userData?.user) throw new Error("Not signed in");
+
+  const { data, error } = await supabase.functions.invoke("chat", {
+    body: {
+      question,
+      trip_id: tripId,
+      user_id: userData.user.id,
+    },
+  });
+
+  if (error) throw error;
+  return data as { answer: string; sources: { type: string; label: string }[] };
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
 
 export const inr = (n: number) => "₹" + n.toLocaleString("en-IN");
 
-/** Best-effort numeric value from a price label like "₹1,200 / night" or "Free". */
 export const priceValue = (label: string | null | undefined) => {
   if (!label) return 0;
   const match = label.replace(/,/g, "").match(/\d+(\.\d+)?/);
