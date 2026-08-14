@@ -46,7 +46,6 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import {
-  TRIP_ID,
   checklistQuery,
   dateRange,
   dayLabel,
@@ -86,7 +85,7 @@ export const Route = createFileRoute("/itinerary")({
 
   loaderDeps: ({ search }) => ({ trip: search.trip }),
   loader: ({ context, deps }) => {
-    const id = deps.trip ?? TRIP_ID;
+    const id = deps.trip;
     context.queryClient.ensureQueryData(tripQuery(id));
     context.queryClient.ensureQueryData(itineraryQuery(id));
     context.queryClient.ensureQueryData(checklistQuery(id));
@@ -112,7 +111,7 @@ const bucketTone: Record<string, string> = {
 function Itinerary() {
   const qc = useQueryClient();
   const { trip: tripParam } = Route.useSearch();
-  const tripId = tripParam ?? TRIP_ID;
+  const tripId = tripParam;
   const { data: trip } = useSuspenseQuery(tripQuery(tripId));
   const { data: items } = useSuspenseQuery(itineraryQuery(tripId));
   const { data: checklist } = useSuspenseQuery(checklistQuery(tripId));

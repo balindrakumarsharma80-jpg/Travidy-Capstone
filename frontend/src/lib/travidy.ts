@@ -12,7 +12,6 @@ import ramjhula from "@/assets/ramjhula.jpg";
 import manali from "@/assets/manali.jpg";
 import kerala from "@/assets/kerala.jpg";
 
-export const TRIP_ID = "11111111-1111-1111-1111-111111111111";
 export const images: Record<string, string> = {
   rishikesh,
   goa,

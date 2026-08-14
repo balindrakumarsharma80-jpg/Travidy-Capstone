@@ -88,7 +88,7 @@ export function AllDestinationsDialog(props: Props) {
   );
 }
 
-export function InviteDialog({ tripId = "rishikesh", ...props }: Props & { tripId?: string }) {
+export function InviteDialog({ tripId, ...props }: Props & { tripId?: string }) {
   const link = `https://travidy.app/trip/${tripId}-escape`;
   return (
     <Shell {...props} title="Plan Together!">
