@@ -148,6 +148,8 @@ const { data: itinerary = [] } = useQuery(
   trip?.destination ??
   "";
 
+const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
+
   const [details, setDetails] = useState({
     title: "",
     days: 3,
@@ -226,51 +228,40 @@ const { data: itinerary = [] } = useQuery(
     return `Here are my picks for ${d.name} — ${d.tagline} Tap Add on anything you like.`;
   }
 
-  const add = useMutation({
+ const add = useMutation({
   mutationFn: async (rec: Suggestion) => {
     let currentTripId = tripId;
 
-    // No trip exists yet — create one for this destination.
+    // Guest user: keep the recommendation locally.
     if (!currentTripId) {
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      setGuestItinerary((items) => {
+        // Prevent duplicate additions
+        if (items.some((item) => item.name === rec.name)) {
+          return items;
+        }
 
-      if (userError) throw userError;
-      if (!user) throw new Error("Please sign in to create a trip.");
-      if (!destination) throw new Error("Please select a destination.");
-
-      const startDate = new Date();
-      const endDate = new Date(startDate);
-      endDate.setDate(startDate.getDate() + Math.max(1, details.days) - 1);
-
-      currentTripId = await createTrip({
-        userId: user.id,
-        destinationId: destination.id,
-        title: details.title || `${destination.name} Trip`,
-        startDate: startDate.toISOString().slice(0, 10),
-        endDate: endDate.toISOString().slice(0, 10),
-        travellers: Math.max(1, details.travelers),
-        budgetAmount: Math.max(0, details.budget),
-        budgetTier: "mid-range",
-        status: "draft",
+       const updated = [
+    ...items,
+    {
+      ...rec,
+      id: crypto.randomUUID(),
+    },
+  ];
+  localStorage.setItem("travidy_guest_itinerary", JSON.stringify(updated));
+   return updated;
       });
+
+      return { tripId: null };
     }
 
+    // Logged-in user with an existing trip
     const { error } = await supabase.from("itinerary_items").insert({
       trip_id: currentTripId,
+      title: rec.title,
+      description: rec.description ?? "",
+      category: rec.category ?? "activity",
       day: addDay,
-      time_label: "Flexible",
-      title: rec.name,
-      place: rec.subtitle || null,
-      category: rec.category,
-      price_label: rec.price_label,
-      duration: rec.duration || null,
-      status: "upcoming",
-      image_key: destination?.imageKey ?? null,
-      position: 99,
-    } as never);
+    });
 
     if (error) throw error;
 
@@ -278,16 +269,23 @@ const { data: itinerary = [] } = useQuery(
   },
 
   onSuccess: ({ tripId: createdTripId }, rec) => {
-    qc.invalidateQueries({ queryKey: ["trip", createdTripId] });
-    qc.invalidateQueries({ queryKey: ["itinerary", createdTripId] });
+    if (createdTripId) {
+      qc.invalidateQueries({ queryKey: ["trip", createdTripId] });
+      qc.invalidateQueries({ queryKey: ["itinerary", createdTripId] });
+    }
 
-    toast.success(`${rec.name} added to day ${addDay}`);
+    toast.success(`${rec.name} added to your trip.`);
   },
 
-  onError: () => toast.error("Couldn't add that to your trip."),
+  onError: (error) => {
+    console.error("ADD TO TRIP ERROR:", error);
+    toast.error("Couldn't add that to your trip.");
+  },
 });
-  const added = new Set(itinerary.map((i) => i.title));
-  const preview = itinerary.slice(0, 3);
+
+  const allItinerary = [...itinerary, ...guestItinerary];
+  const added = new Set(allItinerary.map((i) => "name" in i ? i.name : i.title));
+  const preview = allItinerary.slice(0, 3);
 
   const submit = (text: string) => {
     const value = text.trim();
@@ -731,6 +729,7 @@ const { data: itinerary = [] } = useQuery(
             </h2>
             <Link
               to="/itinerary"
+              search={{ trip: tripId }}
               className="flex items-center gap-1 text-xs font-semibold text-primary"
             >
               View Full Itinerary <ArrowRight className="size-3.5" />
