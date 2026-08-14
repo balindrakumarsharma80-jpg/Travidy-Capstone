@@ -16,6 +16,7 @@ import { Route as ItineraryRouteImport } from './routes/itinerary'
 import { Route as JournalRouteImport } from './routes/journal'
 import { Route as PlannerRouteImport } from './routes/planner'
 import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SavedRouteImport } from './routes/saved'
 import { Route as TripsRouteImport } from './routes/trips'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
@@ -57,6 +58,11 @@ const ProfileRoute = ProfileRouteImport.update({
   path: '/profile',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SavedRoute = SavedRouteImport.update({
   id: '/saved',
   path: '/saved',
@@ -91,6 +97,7 @@ export interface FileRoutesByFullPath {
   '/journal': typeof JournalRoute
   '/planner': typeof PlannerRoute
   '/profile': typeof ProfileRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/saved': typeof SavedRoute
   '/trips': typeof TripsRouteWithChildren
   '/api/transcribe': typeof ApiTranscribeRoute
@@ -105,6 +112,7 @@ export interface FileRoutesByTo {
   '/journal': typeof JournalRoute
   '/planner': typeof PlannerRoute
   '/profile': typeof ProfileRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/saved': typeof SavedRoute
   '/trips': typeof TripsRouteWithChildren
   '/api/transcribe': typeof ApiTranscribeRoute
@@ -120,6 +128,7 @@ export interface FileRoutesById {
   '/journal': typeof JournalRoute
   '/planner': typeof PlannerRoute
   '/profile': typeof ProfileRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/saved': typeof SavedRoute
   '/trips': typeof TripsRouteWithChildren
   '/api/transcribe': typeof ApiTranscribeRoute
@@ -136,6 +145,7 @@ export interface FileRouteTypes {
     | '/journal'
     | '/planner'
     | '/profile'
+    | '/reset-password'
     | '/saved'
     | '/trips'
     | '/api/transcribe'
@@ -150,6 +160,7 @@ export interface FileRouteTypes {
     | '/journal'
     | '/planner'
     | '/profile'
+    | '/reset-password'
     | '/saved'
     | '/trips'
     | '/api/transcribe'
@@ -164,6 +175,7 @@ export interface FileRouteTypes {
     | '/journal'
     | '/planner'
     | '/profile'
+    | '/reset-password'
     | '/saved'
     | '/trips'
     | '/api/transcribe'
@@ -179,6 +191,7 @@ export interface RootRouteChildren {
   JournalRoute: typeof JournalRoute
   PlannerRoute: typeof PlannerRoute
   ProfileRoute: typeof ProfileRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
   SavedRoute: typeof SavedRoute
   TripsRoute: typeof TripsRouteWithChildren
   ApiTranscribeRoute: typeof ApiTranscribeRoute
@@ -234,6 +247,13 @@ declare module '@tanstack/react-router' {
       path: '/profile'
       fullPath: '/profile'
       preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/saved': {
@@ -292,6 +312,7 @@ const rootRouteChildren: RootRouteChildren = {
   JournalRoute: JournalRoute,
   PlannerRoute: PlannerRoute,
   ProfileRoute: ProfileRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
   SavedRoute: SavedRoute,
   TripsRoute: TripsRouteWithChildren,
   ApiTranscribeRoute: ApiTranscribeRoute,

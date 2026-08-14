@@ -62,16 +62,17 @@ export type Recommendation = {
 
 export type ItineraryItem = {
   id: string;
+  trip_id: string;
   day: number;
-  time_label: string;
-  title: string;
+  time_label: string | null;
+  title: string | null;
   place: string | null;
   category: string | null;
   price_label: string | null;
   duration: string | null;
-  status: string;
+  status: string | null;
   image_key: string | null;
-  position: number;
+  order_index: number | null;
 };
 
 export type ChecklistItem = {
@@ -109,29 +110,24 @@ function formatTime(time: string | null): string {
 }
 
 // ---------------------------------------------------------------------------
-// Trip — reads the signed-in user's most recent trip. Genuinely trip-agnostic
-// (no hardcoded TRIP_ID) — this part of the Lovable-built version was
-// correct and is kept as-is, just with the destinations join added so
-// `destination`/`region` are actually populated instead of undefined.
+// Trip — anonymous-first. Takes an explicit tripId (stored client-side,
+// e.g. localStorage) instead of requiring a signed-in session. Works for
+// guests and signed-in users alike; RLS on `trips` allows read/write when
+// user_id is null (unclaimed) or matches auth.uid() (claimed/owned).
+// Destinations join kept so `destination`/`region` are populated correctly.
 // ---------------------------------------------------------------------------
 
-export const tripQuery = () =>
+export const tripQuery = (tripId: string | undefined) =>
   queryOptions({
-    queryKey: ["trip", "current-user"],
+    queryKey: ["trip", tripId],
+    enabled: !!tripId,
     queryFn: async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      const user = session?.user;
-      if (!user) return null;
+      if (!tripId) return null;
 
       const { data, error } = await supabase
         .from("trips")
         .select("*, destinations(name, state)")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(1)
+        .eq("id", tripId)
         .maybeSingle();
 
       if (error) throw error;
@@ -160,27 +156,79 @@ export const tripQuery = () =>
     },
   });
 
+// Creates a new trip anonymously — no auth required. Returns the new trip's
+// id so the caller can store it (e.g. localStorage) for subsequent access.
+export async function createTrip(input: {
+  title: string;
+  destinationId: string;
+  startDate: string;
+  endDate: string;
+  travellers?: number;
+  budgetAmount?: number;
+  budgetTier?: string;
+}): Promise<string> {
+  const { data: userData } = await supabase.auth.getUser();
+
+  const { data, error } = await supabase
+    .from("trips")
+    .insert({
+      title: input.title,
+      destination_id: input.destinationId,
+      start_date: input.startDate,
+      end_date: input.endDate,
+      travellers: input.travellers ?? 1,
+      budget_amount: input.budgetAmount ?? 0,
+      budget_tier: input.budgetTier ?? null,
+      user_id: userData?.user?.id ?? null,
+      status: "draft",
+    })
+    .select("id")
+    .single();
+
+  if (error) throw error;
+  return data.id as string;
+}
+
+// Attaches an unclaimed (user_id null) trip to the now-signed-in user.
+// Call this right after successful signup/login using whatever tripId was
+// sitting in localStorage from anonymous use.
+export async function claimTrip(tripId: string): Promise<void> {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError || !userData?.user) return; // no-op if somehow not signed in
+
+  await supabase
+    .from("trips")
+    .update({ user_id: userData.user.id })
+    .eq("id", tripId)
+    .is("user_id", null);
+}
+
 // ---------------------------------------------------------------------------
 // Recommendations — NOT backed by any table (none exists — deliberate scope
 // decision, no recommendation engine). Recommendation cards in the Planner
 // come from the chat agent's live response, not a persisted query.
 // ---------------------------------------------------------------------------
 
-export const recommendationsQuery = (tripId: string) =>
+export const recommendationsQuery = (tripId: string | undefined) =>
   queryOptions({
     queryKey: ["recommendations", tripId],
+    enabled: !!tripId,
     queryFn: async () => [] as Recommendation[],
   });
 
 // ---------------------------------------------------------------------------
-// Itinerary — now trip-agnostic (takes tripId), using the REAL column names
-// (day_number, order_index — not day/position, which don't exist).
+// Itinerary — anonymous-first (optional tripId + enabled guard), using the
+// REAL column names (day_number, order_index, place_name, item_status,
+// start_time — not day/position/title, which don't exist on this table).
 // ---------------------------------------------------------------------------
 
-export const itineraryQuery = (tripId: string) =>
+export const itineraryQuery = (tripId: string | undefined) =>
   queryOptions({
     queryKey: ["itinerary", tripId],
+    enabled: !!tripId,
     queryFn: async () => {
+      if (!tripId) return [] as ItineraryItem[];
+
       const rows = await unwrap(
         supabase
           .from("itinerary_items")
@@ -192,6 +240,7 @@ export const itineraryQuery = (tripId: string) =>
 
       return (rows as any[]).map((r) => ({
         id: r.id,
+        trip_id: r.trip_id,
         day: r.day_number ?? 1,
         time_label: formatTime(r.start_time),
         title: r.place_name ?? r.notes ?? "Untitled",
@@ -201,20 +250,22 @@ export const itineraryQuery = (tripId: string) =>
         duration: null,
         status: r.item_status ?? "planned",
         image_key: null,
-        position: r.order_index ?? 0,
+        order_index: r.order_index ?? 0,
       })) as ItineraryItem[];
     },
   });
 
 // ---------------------------------------------------------------------------
-// Checklist — trip-agnostic, order_index was already correct in the
-// Lovable-built version.
+// Checklist — anonymous-first, order_index column name already correct.
 // ---------------------------------------------------------------------------
 
-export const checklistQuery = (tripId: string) =>
+export const checklistQuery = (tripId: string | undefined) =>
   queryOptions({
     queryKey: ["checklist", tripId],
+    enabled: !!tripId,
     queryFn: async () => {
+      if (!tripId) return [] as ChecklistItem[];
+
       const rows = await unwrap(
         supabase
           .from("checklist_items")
@@ -245,16 +296,20 @@ export async function addChecklistItem(tripId: string, label: string, position: 
 }
 
 // ---------------------------------------------------------------------------
-// Chat — fixed to use the REAL table (chat_history, not chat_messages),
-// now trip-agnostic. Also adds sendChatMessage, which was missing entirely
-// from the Lovable-built version — this is the actual call to the deployed
-// agent edge function.
+// Chat — anonymous-first, same pattern as trip/itinerary/checklist. Uses the
+// real table (chat_history, not chat_messages). sendChatMessage no longer
+// requires a signed-in session — user_id is included only if present, so
+// signed-in users still get their identity attached for future personali-
+// zation, but guests can chat freely tied to trip_id alone.
 // ---------------------------------------------------------------------------
 
-export const chatQuery = (tripId: string) =>
+export const chatQuery = (tripId: string | undefined) =>
   queryOptions({
     queryKey: ["chat", tripId],
+    enabled: !!tripId,
     queryFn: async () => {
+      if (!tripId) return [] as ChatMessage[];
+
       const rows = await unwrap(
         supabase
           .from("chat_history")
@@ -276,14 +331,13 @@ export async function sendChatMessage(
   tripId: string,
   question: string
 ): Promise<{ answer: string; sources: { type: string; label: string }[] }> {
-  const { data: userData, error: userError } = await supabase.auth.getUser();
-  if (userError || !userData?.user) throw new Error("Not signed in");
+  const { data: userData } = await supabase.auth.getUser();
 
   const { data, error } = await supabase.functions.invoke("chat", {
     body: {
       question,
       trip_id: tripId,
-      user_id: userData.user.id,
+      user_id: userData?.user?.id ?? null,
     },
   });
 

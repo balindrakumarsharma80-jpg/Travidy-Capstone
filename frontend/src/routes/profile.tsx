@@ -71,7 +71,7 @@ const budgetLabels: Record<string, string> = {
 };
 
 function Profile() {
-  const { data: trip } = useSuspenseQuery(tripQuery());
+  const { data: trip } = useQuery(tripQuery());
   const { prefs, setPrefs } = usePrefs();
   const [details, setDetails] = useState({
     fullName: prefs.fullName,
@@ -110,7 +110,7 @@ function Profile() {
   const activeAlerts = Object.values(prefs.notifications).filter(Boolean).length;
 
   const { data: myTrips = [] } = useQuery(myTripsQuery(user?.id));
-  const daysAway = myTrips.reduce((sum, t) => sum + t.days, 0) || trip.days;
+  const daysAway = myTrips.reduce((sum, t) => sum + t.days, 0) || trip?.days || 0;
 
   const rows = [
     {
@@ -159,7 +159,7 @@ function Profile() {
           <div className="min-w-0">
             <h2 className="truncate text-base">{displayName}</h2>
             <p className="truncate text-xs text-muted-foreground">
-              {isAuthenticated ? user?.email : `Sign in to sync • ${trip.title}`}
+              {isAuthenticated ? user?.email : `Sign in to sync${trip?.title ? ` • ${trip.title}` : ""}`}
             </p>
           </div>
         </Card>
