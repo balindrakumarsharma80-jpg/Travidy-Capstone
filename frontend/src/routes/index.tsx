@@ -10,7 +10,6 @@ import {
   ListChecks,
   MapPin,
   MessageCircle,
-  PlayCircle,
   Sparkles,
   Tag,
 } from "lucide-react";
@@ -18,7 +17,6 @@ import {
 import { PhoneShell, Card } from "@/components/travidy/shell";
 import { AppHeader } from "@/components/travidy/app-header";
 import { AllDestinationsDialog, HowItWorksDialog } from "@/components/travidy/dialogs";
-import { DemoVideoDialog } from "@/components/travidy/demo-video-dialog";
 import { destinations as destinationCatalog } from "@/lib/destinations";
 import { usePrefs } from "@/lib/prefs";
 import { tripQuery, img } from "@/lib/travidy";
@@ -84,7 +82,6 @@ function Home() {
   const { prefs, toggleSaved } = usePrefs();
   const [howOpen, setHowOpen] = useState(false);
   const [allOpen, setAllOpen] = useState(false);
-  const [demoOpen, setDemoOpen] = useState(false);
 
   return (
     <PhoneShell>
@@ -118,12 +115,6 @@ function Home() {
             >
               Start Planning <ArrowRight className="size-4" />
             </Link>
-            <button
-              onClick={() => setDemoOpen(true)}
-              className="inline-flex items-center gap-2 rounded-full bg-surface px-5 py-3 text-sm font-semibold shadow-card"
-            >
-              <PlayCircle className="size-4 text-primary" /> Watch Demo
-            </button>
           </div>
         </div>
       </section>
@@ -244,7 +235,6 @@ function Home() {
 
       <HowItWorksDialog open={howOpen} onOpenChange={setHowOpen} />
       <AllDestinationsDialog open={allOpen} onOpenChange={setAllOpen} />
-      <DemoVideoDialog open={demoOpen} onOpenChange={setDemoOpen} />
     </PhoneShell>
   );
 }

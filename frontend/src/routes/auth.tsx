@@ -6,7 +6,6 @@ import { Loader2 } from "lucide-react";
 import { PhoneShell, Card, TravidyLogo } from "@/components/travidy/shell";
 import { AppHeader } from "@/components/travidy/app-header";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
 import { useAuth } from "@/hooks/use-auth";
 
 export const Route = createFileRoute("/auth")({
@@ -111,25 +110,6 @@ function AuthPage() {
     }
   }
 
-  async function onGoogle() {
-    setBusy(true);
-
-    const result = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
-    });
-
-    if (result.error) {
-      setBusy(false);
-      setError("Google sign-in failed. Please try again.");
-      toast.error("Google sign-in failed. Please try again.");
-      return;
-    }
-
-    if (result.redirected) return;
-
-    navigate({ to: "/profile", replace: true });
-  }
-
   function startForgotPassword() {
     setError(null);
     setForgotPassword(true);
@@ -169,25 +149,6 @@ function AuthPage() {
         </div>
 
         <Card className="space-y-3">
-          {!forgotPassword && (
-            <>
-              <button
-                type="button"
-                onClick={onGoogle}
-                disabled={busy}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background py-3 text-xs font-bold"
-              >
-                Continue with Google
-              </button>
-
-              <div className="flex items-center gap-3 text-[10px] uppercase tracking-wide text-muted-foreground">
-                <span className="h-px flex-1 bg-border" />
-                or
-                <span className="h-px flex-1 bg-border" />
-              </div>
-            </>
-          )}
-
           <form onSubmit={onSubmit} className="space-y-2.5">
             {mode === "signup" && !forgotPassword && (
               <input
