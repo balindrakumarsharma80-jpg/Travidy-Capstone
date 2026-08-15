@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   Bell,
@@ -84,12 +84,15 @@ export const Route = createFileRoute("/itinerary")({
     typeof search["trip"] === "string" ? { trip: search["trip"] as string } : {},
 
   loaderDeps: ({ search }) => ({ trip: search.trip }),
-  loader: ({ context, deps }) => {
-    const id = deps.trip;
-    context.queryClient.ensureQueryData(tripQuery(id));
-    context.queryClient.ensureQueryData(itineraryQuery(id));
-    context.queryClient.ensureQueryData(checklistQuery(id));
-  },
+loader: ({ context, deps }) => {
+  const id = deps.trip;
+
+  if (!id) return;
+
+  context.queryClient.ensureQueryData(tripQuery(id));
+  context.queryClient.ensureQueryData(itineraryQuery(id));
+  context.queryClient.ensureQueryData(checklistQuery(id));
+},
   component: Itinerary,
 });
 
@@ -112,10 +115,54 @@ function Itinerary() {
   const qc = useQueryClient();
   const { trip: tripParam } = Route.useSearch();
   const tripId = tripParam;
-  const { data: trip } = useSuspenseQuery(tripQuery(tripId));
-  const { data: items } = useSuspenseQuery(itineraryQuery(tripId));
-  const { data: checklist } = useSuspenseQuery(checklistQuery(tripId));
-  const { data: collaborators = [] } = useQuery(collaboratorsQuery(tripId));
+  const isGuest = !tripId;
+  const { data: trip } = useQuery({
+  ...tripQuery(tripId),
+  enabled: !!tripId,
+});
+  const { data: items = [] } = useQuery({
+  ...itineraryQuery(tripId),
+  enabled: !!tripId,
+});
+  const { data: checklist = [] } = useQuery({
+  ...checklistQuery(tripId),
+  enabled: !!tripId,
+});
+ const { data: collaborators = [] } = useQuery({
+  ...collaboratorsQuery(tripId),
+  enabled: !!tripId,
+});
+const [guestItems, setGuestItems] = useState<any[]>([]);
+useEffect(() => {
+  if (!isGuest) return;
+
+  try {
+    const saved = localStorage.getItem("travidy_guest_itinerary");
+    if (saved) {
+      setGuestItems(JSON.parse(saved));
+    }
+  } catch {
+    setGuestItems([]);
+  }
+}, [isGuest]);
+
+const displayItems = isGuest ? guestItems : items;
+const currentTrip = trip ?? {
+  title: "My Trip",
+  days: Math.max(1, ...guestItems.map((item) => Number(item.day ?? 1))),
+  travelers: 1,
+  budget: 0,
+  budget_amount: 0,
+  spent: 0,
+  spent_amount: 0,
+  destination: "Your Trip",
+  region: "",
+  weather: "",
+  start_date: null,
+  end_date: null,
+  travelers_label: "",
+  share_token: null,
+};
   const [shareOpen, setShareOpen] = useState(false);
   const [day, setDay] = useState(1);
   const [expanded, setExpanded] = useState(false);
@@ -124,26 +171,31 @@ function Itinerary() {
   const [newTask, setNewTask] = useState("");
   const [showBudgetDetail, setShowBudgetDetail] = useState(false);
   const [details, setDetails] = useState({
-    title: trip.title,
-    days: trip.days,
-    travelers: trip.travellers ?? trip.travelers,
-    budget: trip.budget_amount ?? trip.budget,
-  });
+  title: currentTrip.title,
+  days: currentTrip.days,
+  travelers: currentTrip.travellers ?? currentTrip.travelers ?? 1,
+  budget: currentTrip.budget_amount ?? currentTrip.budget ?? 0,
+});
 
-  const dayItems = items.filter((i) => i.day === day);
+  const dayItems = displayItems.filter((i) => i.day === day);
   const shown = expanded ? dayItems : dayItems.slice(0, 5);
-  const doneCount = items.filter((i) => i.status === "completed").length;
-  const progress = items.length ? Math.round((doneCount / items.length) * 100) : 0;
+  const doneCount = displayItems.filter((i) => i.status === "completed").length;
+  const progress = displayItems.length
+  ? Math.round((doneCount / displayItems.length) * 100)
+  : 0;
   const checkedCount = checklist.filter((c) => c.done).length;
   const suggestedTasks = suggestChecklist(
-    items,
-    checklist.map((c) => c.label),
-  );
+  displayItems,
+  checklist.map((c) => c.label),
+);
 
   const invalidate = (key: string) => qc.invalidateQueries({ queryKey: [key, tripId] });
 
   const toggleCheck = useMutation({
     mutationFn: async (item: ChecklistItem) => {
+      if (isGuest) {
+  return;
+}
       const { error } = await supabase
         .from("checklist_items")
         .update({ done: !item.done } as never)
@@ -156,6 +208,7 @@ function Itinerary() {
 
   const addTask = useMutation({
     mutationFn: async (label: string) => {
+      if (isGuest || !tripId) return;
       const { error } = await supabase.from("checklist_items").insert({
         trip_id: tripId,
         label,
@@ -176,6 +229,7 @@ function Itinerary() {
 
   const removeTask = useMutation({
     mutationFn: async (id: string) => {
+      if (isGuest || !tripId) return;
       const { error } = await supabase.from("checklist_items").delete().eq("id", id);
       if (error) throw error;
     },
@@ -184,46 +238,106 @@ function Itinerary() {
   });
 
   const setStatus = useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      const { error } = await supabase
-        .from("itinerary_items")
-        .update({ status } as never)
-        .eq("id", id);
-      if (error) throw error;
-    },
-    onSuccess: (_d, v) => {
+  mutationFn: async ({ id, status }: { id: string; status: string }) => {
+    if (isGuest) {
+      const updated = guestItems.map((item) =>
+        item.id === id ? { ...item, status } : item
+      );
+
+      setGuestItems(updated);
+      localStorage.setItem(
+        "travidy_guest_itinerary",
+        JSON.stringify(updated)
+      );
+
+      return;
+    }
+
+    const { error } = await supabase
+      .from("itinerary_items")
+      .update({ status } as never)
+      .eq("id", id);
+
+    if (error) throw error;
+  },
+
+  onSuccess: (_d, v) => {
+    if (!isGuest) {
       invalidate("itinerary");
-      toast.success(v.status === "completed" ? "Nice! Marked as done." : "Moved back to upcoming.");
-    },
-    onError: () => toast.error("Couldn't update that activity."),
-  });
+    }
+
+    toast.success(
+      v.status === "completed"
+        ? "Nice! Marked as done."
+        : "Moved back to upcoming."
+    );
+  },
+
+  onError: () => toast.error("Couldn't update that activity."),
+});
 
   const removeItem = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from("itinerary_items").delete().eq("id", id);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      invalidate("itinerary");
-      toast.success("Removed from your plan");
-    },
-    onError: () => toast.error("Couldn't remove that activity."),
-  });
+  mutationFn: async (id: string) => {
+    if (isGuest) {
+      const updated = guestItems.filter((item) => item.id !== id);
 
-  const clearPlan = useMutation({
-    mutationFn: async () => {
-      const { error } = await supabase.from("itinerary_items").delete().eq("trip_id", tripId);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      invalidate("itinerary");
-      toast.success("Plan cleared — start fresh whenever you like.");
-    },
-    onError: () => toast.error("Couldn't clear the plan."),
-  });
+      setGuestItems(updated);
+      localStorage.setItem(
+        "travidy_guest_itinerary",
+        JSON.stringify(updated)
+      );
 
+      return;
+    }
+
+    const { error } = await supabase
+      .from("itinerary_items")
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+  },
+
+  onSuccess: () => {
+    if (!isGuest) {
+      invalidate("itinerary");
+    }
+
+    toast.success("Removed from your plan");
+  },
+
+  onError: () => toast.error("Couldn't remove that activity."),
+});
+
+ const clearPlan = useMutation({
+  mutationFn: async () => {
+    if (isGuest) {
+      setGuestItems([]);
+      localStorage.removeItem("travidy_guest_itinerary");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("itinerary_items")
+      .delete()
+      .eq("trip_id", tripId);
+
+    if (error) throw error;
+  },
+
+  onSuccess: () => {
+    if (!isGuest) {
+      invalidate("itinerary");
+    }
+
+    toast.success("Plan cleared — start fresh whenever you like.");
+  },
+
+  onError: () => toast.error("Couldn't clear the plan."),
+});
   const resetChecklist = useMutation({
     mutationFn: async () => {
+      if (isGuest || !tripId) return;
       const { error } = await supabase
         .from("checklist_items")
         .update({ done: false } as never)
@@ -239,6 +353,7 @@ function Itinerary() {
 
   const saveTrip = useMutation({
     mutationFn: async () => {
+      if (isGuest || !tripId) return;
       const { error } = await supabase
         .from("trips")
         .update({
@@ -264,7 +379,7 @@ function Itinerary() {
 
   // Spend is derived from what you have actually planned — nothing is assumed.
   const buckets = new Map<string, number>();
-  for (const i of items) {
+  for (const i of displayItems) {
     const bucket = catStyle[i.category ?? ""]?.bucket ?? "Other";
     buckets.set(bucket, (buckets.get(bucket) ?? 0) + priceValue(i.price_label));
   }
@@ -272,35 +387,40 @@ function Itinerary() {
     .filter(([, amount]) => amount > 0)
     .map(([label, amount]) => ({ label, amount, tone: bucketTone[label] ?? "bg-primary" }));
   const spentTotal = budget.reduce((s, b) => s + b.amount, 0);
-  const budgetTotal = trip.budget_amount ?? trip.budget;
+  const budgetTotal = currentTrip.budget_amount ?? currentTrip.budget;
 
   // Keep the persisted spend in step with what is actually planned.
   useEffect(() => {
-    if ((trip.spent_amount ?? trip.spent) === spentTotal) return;
+     if (isGuest || !tripId) return;
+    if ((currentTrip.spent_amount ?? currentTrip.spent) === spentTotal) return;
     void supabase
       .from("trips")
       .update({ spent: spentTotal, spent_amount: spentTotal } as never)
       .eq("id", tripId);
-  }, [spentTotal, trip.spent_amount, trip.spent, tripId]);
+  }, [isGuest, spentTotal, currentTrip.spent_amount, currentTrip .spent, tripId]);
 
-  const shareUrl =
-    typeof window !== "undefined" ? `${window.location.origin}/shared/${trip.share_token}` : "";
+ const shareUrl =
+  !isGuest && typeof window !== "undefined"
+    ? `${window.location.origin}/shared/${currentTrip.share_token}`
+    : "";
   const inviteUrl =
-    typeof window !== "undefined" ? `${window.location.origin}/trips/${tripId}/join` : "";
+  !isGuest && typeof window !== "undefined"
+    ? `${window.location.origin}/trips/${tripId}/join`
+    : "";
   const copy = async (url: string, label: string) => {
     await navigator.clipboard.writeText(url);
     toast.success(`${label} copied`);
   };
 
   const catalogDest = destinations.find(
-    (d) => d.name.toLowerCase() === trip.destination.toLowerCase(),
+    (d) => d.name.toLowerCase() === currentTrip.destination.toLowerCase(),
   );
   const planDest = catalogDest?.id;
 
   const share = async () => {
     const url = window.location.href;
     try {
-      if (navigator.share) await navigator.share({ title: trip.title, url });
+      if (navigator.share) await navigator.share({ title: currentTrip.title, url });
       else {
         await navigator.clipboard.writeText(url);
         toast.success("Trip link copied — share it with your travel buddies");
@@ -311,12 +431,12 @@ function Itinerary() {
   };
 
   const navigateTo = (item: ItineraryItem) => {
-    const q = encodeURIComponent(`${item.title} ${item.place ?? trip.destination}`);
+    const q = encodeURIComponent(`${item.title} ${item.place ?? currentTrip.destination}`);
     window.open(`https://www.google.com/maps/search/?api=1&query=${q}`, "_blank", "noopener");
   };
 
   const downloadPdf = () => {
-    const ok = exportItineraryPdf(trip, items, checklist);
+    const ok = exportItineraryPdf(currentTrip, displayItems, checklist);
     if (ok) toast.success("Choose “Save as PDF” in the print dialog");
     else toast.error("Allow pop-ups to export your itinerary.");
   };
@@ -336,20 +456,20 @@ function Itinerary() {
           <button
             onClick={() => {
               setDetails({
-                title: trip.title,
-                days: trip.days,
-                travelers: trip.travelers,
-                budget: trip.budget,
+               title: currentTrip.title,
+               days: currentTrip.days,
+              travelers: currentTrip.travelers,
+              budget: currentTrip.budget,
               });
               setEditOpen(true);
             }}
             className="flex max-w-full items-center gap-1.5 text-left"
           >
-            <h1 className="truncate text-lg">{trip.title}</h1>
+            <h1 className="truncate text-lg">{currentTrip.title}</h1>
             <Pencil className="size-4 shrink-0 text-primary" />
           </button>
           <p className="truncate text-xs text-muted-foreground">
-            {dateRange(trip.start_date, trip.end_date)} • {trip.travelers} Travelers
+            {dateRange(currentTrip.start_date, currentTrip.end_date)} • {currentTrip.travelers} Travelers
           </p>
         </div>
         <button
@@ -390,7 +510,7 @@ function Itinerary() {
         <section className="relative overflow-hidden rounded-2xl">
           <img
             src={img(catalogDest?.imageKey)}
-            alt={`${trip.destination}${trip.region ? `, ${trip.region}` : ""}`}
+            alt={`${currentTrip.destination}${currentTrip.region ? `, ${currentTrip.region}` : ""}`}
             loading="lazy"
             width={1024}
             height={768}
@@ -400,26 +520,26 @@ function Itinerary() {
           <div className="absolute inset-0 flex flex-col justify-between p-4">
             <div>
               <h2 className="text-lg text-background">
-                {trip.destination}
-                {trip.region ? `, ${trip.region}` : ""}
+                {currentTrip.destination}
+                {currentTrip.region ? `, ${currentTrip.region}` : ""}
               </h2>
               <p className="mt-1 flex items-center gap-1.5 text-xs text-background/90">
-                <Sun className="size-4 text-adventure" /> {trip.weather}
+                <Sun className="size-4 text-adventure" /> {currentTrip.weather}
               </p>
             </div>
             <div className="flex items-end gap-3">
               <dl className="flex flex-1 gap-3 rounded-xl bg-surface/95 p-3 text-[11px]">
                 <Fact
                   icon={Calendar}
-                  label={`${trip.days} Days`}
-                  sub={dateRange(trip.start_date, trip.end_date)}
+                  label={`${currentTrip.days} Days`}
+                  sub={dateRange(currentTrip.start_date, currentTrip.end_date)}
                 />
                 <Fact
                   icon={Users}
-                  label={`${trip.travelers} Travelers`}
-                  sub={trip.travelers_label ?? ""}
+                  label={`${currentTrip.travelers} Travelers`}
+                  sub={currentTrip.travelers_label ?? ""}
                 />
-                <Fact icon={Wallet} label={inr(trip.budget)} sub="Budget" />
+                <Fact icon={Wallet} label={inr(currentTrip.budget)} sub="Budget" />
               </dl>
             </div>
           </div>
@@ -427,13 +547,13 @@ function Itinerary() {
             <p className="text-[11px] font-semibold">Trip Progress</p>
             <Ring value={progress} />
             <p className="mt-1 flex items-center justify-center gap-1 text-[10px] text-muted-foreground">
-              <CheckSquare className="size-3" /> {doneCount} / {items.length} done
+              <CheckSquare className="size-3" /> {doneCount} / {displayItems.length} done
             </p>
           </div>
         </section>
 
         <nav className="flex border-b border-border">
-          {Array.from({ length: trip.days }, (_, i) => i + 1).map((d) => (
+          {Array.from({ length: currentTrip.days }, (_, i) => i + 1).map((d) => (
             <button
               key={d}
               onClick={() => setDay(d)}
@@ -442,7 +562,7 @@ function Itinerary() {
               }`}
             >
               <span className="block text-sm font-bold tracking-wide">DAY {d}</span>
-              <span className="block text-[11px]">{dayLabel(trip.start_date, d)}</span>
+              <span className="block text-[11px]">{dayLabel(currentTrip.start_date, d)}</span>
             </button>
           ))}
         </nav>
