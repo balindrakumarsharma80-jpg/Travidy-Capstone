@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { askTravidy } from "@/lib/rag.functions";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -39,13 +39,43 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import {img, inr, itineraryQuery, tripQuery } from "@/lib/travidy";
-import { createTrip } from "@/lib/trips";
+import { useAuth } from "@/hooks/use-auth";
+const DESTINATION_DB_IDS: Record<string, string> = {
+   rishikesh: "2f634884-ba98-4c6b-9b1f-0a485172c9c3",
+};
 import {
   destinations as destinationCatalog,
   destinationRecs,
   findDestination,
   type DestRec,
 } from "@/lib/destinations";
+
+const calculateDays = (start: string, end: string) => {
+  if (!start || !end) return 1;
+
+  const startDate = new Date(`${start}T00:00:00`);
+  const endDate = new Date(`${end}T00:00:00`);
+
+  const diff = endDate.getTime() - startDate.getTime();
+
+  if (diff < 0) return 1;
+
+  return Math.floor(diff / 86_400_000) + 1;
+};
+
+const getDefaultBudget = (dailyBudget: string, days: number) => {
+  const numbers = dailyBudget.match(/[\d,]+/g);
+
+  if (!numbers || numbers.length < 2) return 0;
+
+  const min = Number(numbers[0].replace(/,/g, ""));
+  const max = Number(numbers[1].replace(/,/g, ""));
+
+  const averageDaily = (min + max) / 2;
+
+  return Math.round(averageDaily * days);
+};
+
 
 const DESTINATIONS = destinationCatalog.map((d) => ({
   key: d.id,
@@ -111,22 +141,27 @@ type Msg = { id: string; role: "user" | "ai"; text: string; suggestions?: Sugges
 
 const uid = () => Math.random().toString(36).slice(2);
 
+
 function Planner() {
   const { dest, trip: tripParam } = Route.useSearch();
+  const { user, isAuthenticated } = useAuth();
+  const navigate = useNavigate();
   const qc = useQueryClient();
 
+  const storedTripId =
+  typeof window !== "undefined"
+    ? localStorage.getItem("travidy_trip_id")
+    : null;
+    const tripId = tripParam ?? storedTripId ?? undefined;
 const { data: trip = null } = useQuery({
-    ...tripQuery(tripParam ?? ""),
-    enabled: !!tripParam,
-  });
-
-
-
-const tripId = trip?.id;
-
+  ...tripQuery(tripId),
+  enabled: !!tripId,
+});
+console.log("TRIP DEBUG:", trip);
+console.log("TRIP BUDGET:", trip?.budget);
 
 const { data: itinerary = [] } = useQuery(
-  itineraryQuery(tripId ?? "")
+  itineraryQuery(tripId)
 );
 
 
@@ -142,37 +177,55 @@ const { data: itinerary = [] } = useQuery(
   const fileRef = useRef<HTMLInputElement>(null);
 
   const destination = findDestination(dest);
- const destName =
-  destination?.name ??
-  dest ??
-  trip?.destination ??
-  "";
+  const destName = destination?.name ?? dest ?? "";
 
-const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
+const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>(() => {
+  try {
+    const saved = localStorage.getItem("travidy_guest_itinerary");
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+});
+
+
 
   const [details, setDetails] = useState({
     title: "",
-    days: 3,
-    travelers: 2,
-    budget: 15000,
+    days: 1,
+    travelers: 1,
+    budget: 0,
+    start_date: "",
+    end_date: "",
   });
 
   useEffect(() => {
-  if (!destination) return;
+    if (!destination && !trip) return;
 
-  setDetails({
-    title: trip?.title || `${destination.name} Trip`,
-    days: trip?.days ?? 5,
-    travelers: trip?.travelers ?? 1,
-    budget: trip?.budget ?? destination.dailyBudget,
-  });
-}, [
-  destination,
-  trip?.title,
-  trip?.days,
-  trip?.travelers,
-  trip?.budget,
-]);
+    const startDate =
+      trip?.start_date ??
+      new Date().toISOString().split("T")[0];
+
+    const endDate =
+      trip?.end_date ??
+      new Date(Date.now() + 4 * 86_400_000)
+        .toISOString()
+        .split("T")[0];
+
+        const calculatedDays = calculateDays(startDate, endDate);
+
+    setDetails({
+     title: trip?.title ?? `${destination?.name ?? destName} Trip`,
+  days: calculatedDays,
+  travelers: Number(trip?.travelers ?? 1),
+  budget:
+    trip?.budget  != null
+      ? Number(trip.budget)
+      : getDefaultBudget(destination?.dailyBudget ?? "", calculatedDays),
+  start_date: startDate,
+  end_date: endDate,
+    });
+  }, [destination, trip, destName]);
 
   useEffect(() => {
     if (messages.length || thinking)
@@ -183,25 +236,88 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
 
   const saveTrip = useMutation({
     mutationFn: async () => {
-      const { error } = await supabase
+      if (!details.start_date || !details.end_date) {
+        throw new Error("Please select both start and end dates.");
+      }
+
+      if (details.end_date < details.start_date) {
+        throw new Error("End date cannot be before start date.");
+      }
+
+      if (tripId) {
+        const { error } = await supabase
+          .from("trips")
+          .update({
+            title: details.title || `${destName} Trip`,
+            start_date: details.start_date,
+            end_date: details.end_date,
+            travellers: Math.max(1, Number(details.travelers) || 1),
+            budget_amount: Math.max(0, Number(details.budget) || 0),
+          } as never)
+          .eq("id", tripId);
+
+        if (error) throw error;
+        return tripId;
+      }
+
+      const destinationDbId =
+  destination?.id === "rishikesh"
+    ? "2f634884-ba98-4c6b-9b1f-0a485172c9c3"
+    : null;
+
+
+if (!destinationDbId) {
+  throw new Error(`No database destination found for "${destName}".`);
+}
+
+      const { data, error } = await supabase
         .from("trips")
-        .update({
+        .insert({
+          user_id: user?.id ?? null,
+          destination_id: destinationDbId,
           title: details.title || `${destName} Trip`,
-          destination: destName || trip?.destination || "",
-          days: Math.max(1, details.days),
-          travelers: Math.max(1, details.travelers),
-          travelers_label: `${details.travelers} Traveller${details.travelers > 1 ? "s" : ""}`,
-          budget: details.budget,
+          start_date: details.start_date,
+          end_date: details.end_date,
+          travellers: Math.max(1, Number(details.travelers) || 1),
+          budget_amount: Math.max(0, Number(details.budget) || 0),
+          spent_amount: 0,
+          status: "draft",
+          share_token: crypto.randomUUID(),
         } as never)
-        .eq("id", tripId);
-      if (error) throw error;
+        .select("id")
+        .single();
+
+      if (error) {
+  console.error("CREATE TRIP SUPABASE ERROR:", error);
+  throw error;
+}
+      return data.id as string;
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["trip", tripId] });
+
+    onSuccess: (savedTripId) => {
+      qc.invalidateQueries({ queryKey: ["trip", savedTripId] });
+      qc.invalidateQueries({ queryKey: ["my-trips"] });
+      qc.invalidateQueries({ queryKey: ["itinerary", savedTripId] });
       setEditOpen(false);
-      toast.success("Trip details updated");
+      toast.success("Trip details saved");
+
+      void navigate({
+        to: "/planner",
+        search: {
+          dest: dest ?? "",
+          trip: savedTripId,
+        },
+      });
     },
-    onError: () => toast.error("Couldn't save your trip details."),
+
+    onError: (error) => {
+      console.error("SAVE TRIP ERROR:", error);
+      console.error("SAVE TRIP MESSAGE:", (error as any)?.message);
+      console.error("SAVE TRIP DETAILS:", (error as any)?.details);
+      console.error("SAVE TRIP HINT:", (error as any)?.hint);
+      console.error("SAVE TRIP CODE:", (error as any)?.code);
+      toast.error((error as any)?.message ?? "Couldn't save your trip details.");
+    },
   });
 
   function aiReply(prompt: string) {
@@ -228,12 +344,98 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
     return `Here are my picks for ${d.name} — ${d.tagline} Tap Add on anything you like.`;
   }
 
+  const createGuestTripForSharing = async () => {
+  const savedItems = JSON.parse(
+    localStorage.getItem("travidy_guest_itinerary") ?? "[]"
+  );
+
+  const savedBudget = Number(
+    localStorage.getItem("travidy_guest_budget") ?? details.budget ?? 0
+  );
+
+  if (!savedItems.length) {
+    toast.error("Add at least one itinerary item before sharing.");
+    return null;
+  }
+
+  if (!details.start_date || !details.end_date) {
+    toast.error("Please select your trip dates before sharing.");
+    return null;
+  }
+
+  const destinationDbId =
+    destination?.id === "rishikesh"
+      ? "2f634884-ba98-4c6b-9b1f-0a485172c9c3"
+      : null;
+
+  if (!destinationDbId) {
+    toast.error(`No database destination found for "${destName}".`);
+    return null;
+  }
+
+  const shareToken = crypto.randomUUID();
+
+  const { data: newTrip, error: tripError } = await supabase
+    .from("trips")
+    .insert({
+      user_id: user?.id ?? null,
+      destination_id: destinationDbId,
+      title: details.title || `${destName} Trip`,
+      start_date: details.start_date,
+      end_date: details.end_date,
+      travellers: Math.max(1, Number(details.travelers) || 1),
+      budget_amount: savedBudget,
+      spent_amount: 0,
+      status: "draft",
+      share_token: shareToken,
+    } as never)
+    .select("id, share_token")
+    .single();
+
+  if (tripError) {
+    console.error("CREATE GUEST SHARE TRIP ERROR:", tripError);
+    toast.error(tripError.message || "Could not create shareable trip.");
+    return null;
+  }
+
+  const itemsToInsert = savedItems.map((item: Suggestion, index: number) => ({
+    trip_id: newTrip.id,
+    day_number: Number((item as any).day_number ?? 1),
+    place_name: item.name,
+    notes: item.subtitle ?? null,
+    category: item.category ?? "activity",
+    price_label: item.price_label ?? null,
+    item_status: "planned",
+    source: "agent",
+    order_index: index,
+  }));
+
+  const { error: itemsError } = await supabase
+    .from("itinerary_items")
+    .insert(itemsToInsert as never);
+
+  if (itemsError) {
+    console.error("CREATE GUEST SHARE ITEMS ERROR:", itemsError);
+    toast.error(itemsError.message || "Could not save itinerary items.");
+    return null;
+  }
+
+  localStorage.setItem("travidy_trip_id", newTrip.id);
+  localStorage.removeItem("travidy_guest_itinerary");
+  localStorage.removeItem("travidy_guest_budget");
+
+  return {
+    tripId: newTrip.id as string,
+    shareToken: newTrip.share_token as string,
+  };
+};
+
  const add = useMutation({
   mutationFn: async (rec: Suggestion) => {
     let currentTripId = tripId;
 
     // Guest user: keep the recommendation locally.
-    if (!currentTripId) {
+    if (!isAuthenticated || !currentTripId) {
       setGuestItinerary((items) => {
         // Prevent duplicate additions
         if (items.some((item) => item.name === rec.name)) {
@@ -241,51 +443,90 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
         }
 
        const updated = [
-    ...items,
-    {
-      ...rec,
-      id: crypto.randomUUID(),
-    },
-  ];
+  ...items,
+  {
+    ...rec,
+    id: crypto.randomUUID(),
+    day_number: addDay,
+    status: "planned",
+  },
+];
   localStorage.setItem("travidy_guest_itinerary", JSON.stringify(updated));
+  localStorage.setItem(
+  "travidy_guest_budget",
+  String(details.budget)
+);
    return updated;
       });
 
       return { tripId: null };
     }
 
+    // Existing saved trip requires authentication.
+    if (!isAuthenticated) {
+      toast.error("Please sign in to add activities to this trip.");
+      return { tripId: null };
+    }
+
     // Logged-in user with an existing trip
     const { error } = await supabase.from("itinerary_items").insert({
-      trip_id: currentTripId,
-      title: rec.title,
-      description: rec.description ?? "",
-      category: rec.category ?? "activity",
-      day: addDay,
-    });
+trip_id: currentTripId,
+  day_number: addDay,
+  place_name: rec.name,
+  notes: rec.subtitle ?? null,
+  category: rec.category ?? "activity",
+  price_label: rec.price_label ?? null,
+  item_status: "planned",
+  source: "agent",
+  order_index: 99,
+});
 
     if (error) throw error;
 
     return { tripId: currentTripId };
   },
 
-  onSuccess: ({ tripId: createdTripId }, rec) => {
-    if (createdTripId) {
-      qc.invalidateQueries({ queryKey: ["trip", createdTripId] });
-      qc.invalidateQueries({ queryKey: ["itinerary", createdTripId] });
-    }
+ onSuccess: async ({ tripId: createdTripId }, rec) => {
+  if (!createdTripId) {
+    return;};
 
-    toast.success(`${rec.name} added to your trip.`);
-  },
+    await qc.invalidateQueries({
+    queryKey: ["itinerary", createdTripId],
+  });
+
+  await qc.invalidateQueries({
+    queryKey: ["trip", createdTripId],
+  });
+
+  toast.success(`${rec.name} added to your trip.`);
+},
 
   onError: (error) => {
-    console.error("ADD TO TRIP ERROR:", error);
-    toast.error("Couldn't add that to your trip.");
+   console.error("ADD TO TRIP ERROR:", error);
+  console.error("ADD TO TRIP MESSAGE:", (error as any)?.message);
+  console.error("ADD TO TRIP DETAILS:", (error as any)?.details);
+  console.error("ADD TO TRIP HINT:", (error as any)?.hint);
+  console.error("ADD TO TRIP CODE:", (error as any)?.code);
+     toast.error(
+    (error as any)?.message ?? "Couldn't add that to your trip."
+  );
   },
 });
 
-  const allItinerary = [...itinerary, ...guestItinerary];
-  const added = new Set(allItinerary.map((i) => "name" in i ? i.name : i.title));
-  const preview = allItinerary.slice(0, 3);
+ const allItinerary = !isAuthenticated || !tripId ? guestItinerary : itinerary;
+
+const added = new Set(
+  allItinerary
+    .map((i) => ("name" in i ? i.name : i.title))
+    .filter(Boolean)
+    .map((name) => String(name).trim().toLowerCase())
+);
+console.log("TRAVIDY DEBUG - tripId:", tripId);
+console.log("TRAVIDY DEBUG - itinerary:", itinerary);
+console.log("TRAVIDY DEBUG - guestItinerary:", guestItinerary);
+console.log("TRAVIDY DEBUG - added:", [...added]);
+
+const preview = allItinerary.slice(0, 3);
 
   const submit = (text: string) => {
     const value = text.trim();
@@ -475,14 +716,25 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
             </div>
             <dl className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
               <Fact
-                icon={Calendar}
-                label={`${details.days} Days`}
-                sub={destination?.bestTime ?? ""}
-              />
+ icon={Calendar}
+  label={`${details.days} Days`}
+  sub={
+    tripId && details.start_date && details.end_date
+      ? `${new Date(`${details.start_date}T00:00:00`).toLocaleDateString("en-GB", {
+          day: "numeric",
+          month: "short",
+        })} – ${new Date(`${details.end_date}T00:00:00`).toLocaleDateString("en-GB", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        })}`
+      : `Best time: ${destination?.bestTime ?? ""}`
+  }
+/>
               <Fact
                 icon={Users}
                 label={`${details.travelers} Travelers`}
-                sub={trip?.travelers_label ?? `${details.travelers} Traveller${details.travelers > 1 ? "s" : ""}`}
+                sub={`${details.travelers} Traveller${details.travelers > 1 ? "s" : ""}`}
               />
               <Fact icon={Wallet} label="Budget" sub={inr(details.budget)} />
             </dl>
@@ -510,10 +762,20 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
                 </li>
               ))}
             </ul>
-            <p className="mt-3 text-xs">
-              <span className="font-semibold">Daily budget:</span>{" "}
-              <span className="text-muted-foreground">{destination.dailyBudget}</span>
-            </p>
+           <p className="mt-3 text-xs">
+  <span className="font-semibold">
+    {tripId ? "Your daily budget:" : "Daily budget:"}
+  </span>{" "}
+  <span className="text-muted-foreground">
+    {tripId
+      ? inr(
+          details.days > 0
+            ? Math.round(details.budget / details.days)
+            : 0
+        ) + " / day"
+      : destination.dailyBudget}
+  </span>
+</p>
           </Card>
         )}
 
@@ -571,7 +833,7 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
                         tone: "bg-ai-soft text-ai",
                       };
                       const Icon = style.icon;
-                      const isAdded = added.has(r.name);
+                      const isAdded = added.has(r.name.trim().toLowerCase());
                       return (
                         <li
                           key={`${m.id}-${idx}`}
@@ -725,15 +987,24 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
         <Card>
           <div className="flex items-center justify-between">
             <h2 className="text-base">
-              Your Itinerary <span className="text-xs text-muted-foreground">(Preview)</span>
+              Your Itinerary{" "} <span className="text-xs text-muted-foreground">(Preview)</span>
             </h2>
-            <Link
-              to="/itinerary"
-              search={{ trip: tripId }}
-              className="flex items-center gap-1 text-xs font-semibold text-primary"
-            >
-              View Full Itinerary <ArrowRight className="size-3.5" />
-            </Link>
+           {tripId ? (
+  <Link
+    to="/itinerary"
+    search={{ trip: tripId }}
+    className="flex items-center gap-1 text-xs font-semibold text-primary"
+  >
+    View Full Itinerary <ArrowRight className="size-3.5" />
+  </Link>
+) : (
+  <Link
+    to="/itinerary"
+    className="flex items-center gap-1 text-xs font-semibold text-primary"
+  >
+    View Full Itinerary <ArrowRight className="size-3.5" />
+  </Link>
+)}
           </div>
           {preview.length === 0 ? (
             <p className="mt-3 text-xs text-muted-foreground">
@@ -768,17 +1039,33 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
               Plan trips together and get exciting rewards!
             </p>
           </div>
-          <button
-            onClick={() => {
-              void navigator.clipboard
-                ?.writeText(window.location.href)
-                .then(() => toast.success("Invite link copied to your clipboard"))
-                .catch(() => toast.error("Couldn't copy the link."));
-            }}
-            className="rounded-full bg-surface px-4 py-2 text-xs font-semibold text-primary shadow-card"
-          >
-            Invite Now
-          </button>
+         <button
+  onClick={async () => {
+    if (!tripId) {
+      const result = await createGuestTripForSharing();
+
+      if (!result) return;
+
+      const shareUrl =
+        `${window.location.origin}/itinerary?trip=${result.tripId}&share=${result.shareToken}`;
+
+      await navigator.clipboard.writeText(shareUrl);
+
+      toast.success("Invite link copied to your clipboard");
+      return;
+    }
+
+    const shareUrl =
+      `${window.location.origin}/itinerary?trip=${tripId}`;
+
+    await navigator.clipboard.writeText(shareUrl);
+
+    toast.success("Invite link copied to your clipboard");
+  }}
+  className="rounded-full bg-surface px-4 py-2 text-xs font-semibold text-primary shadow-card"
+>
+  Invite Now
+</button>
           <Gift className="size-8 text-adventure" />
         </div>
       </div>
@@ -795,7 +1082,8 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
               <Input
                 id="trip-title"
                 value={details.title}
-                onChange={(e) => setDetails((d) => ({ ...d, title: e.target.value }))}
+                readOnly
+                className="bg-muted"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -804,9 +1092,9 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
                 <Input
                   id="trip-days"
                   type="number"
-                  min={1}
                   value={details.days}
-                  onChange={(e) => setDetails((d) => ({ ...d, days: Number(e.target.value) }))}
+                  readOnly
+                   className="bg-muted"
                 />
               </div>
               <div className="space-y-1.5">
@@ -831,6 +1119,45 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
                 onChange={(e) => setDetails((d) => ({ ...d, budget: Number(e.target.value) }))}
               />
             </div>
+            <div className="grid grid-cols-2 gap-3">
+  <div className="space-y-1.5">
+    <Label htmlFor="trip-start-date">Start Date</Label>
+    <Input
+      id="trip-start-date"
+      type="date"
+      value={details.start_date}
+      onChange={(e) =>
+        setDetails((d) => {
+          const start_date = e.target.value;
+          return {
+            ...d,
+            start_date,
+            days: calculateDays(start_date, d.end_date),
+          };
+        })
+      }
+    />
+  </div>
+
+  <div className="space-y-1.5">
+    <Label htmlFor="trip-end-date">End Date</Label>
+    <Input
+      id="trip-end-date"
+      type="date"
+      value={details.end_date}
+      onChange={(e) =>
+        setDetails((d) => {
+          const end_date = e.target.value;
+          return {
+            ...d,
+            end_date,
+            days: calculateDays(d.start_date, end_date),
+          };
+        })
+      }
+    />
+  </div>
+</div>
           </div>
           <DialogFooter>
             <Button onClick={() => saveTrip.mutate()} disabled={saveTrip.isPending}>
@@ -849,7 +1176,7 @@ function Fact({ icon: Icon, label, sub }: { icon: typeof Calendar; label: string
       <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
       <div className="min-w-0">
         <dt className="truncate font-semibold">{label}</dt>
-        <dd className="truncate text-muted-foreground">{sub}</dd>
+        <dd className="text-muted-foreground">{sub}</dd>
       </div>
     </div>
   );

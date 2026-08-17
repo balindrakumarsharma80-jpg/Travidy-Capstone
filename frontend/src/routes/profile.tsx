@@ -12,7 +12,7 @@ import {
   User,
   Wallet,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { PhoneShell, Card } from "@/components/travidy/shell";
 import { AppHeader } from "@/components/travidy/app-header";
@@ -74,29 +74,23 @@ function Profile() {
   const { data: trip } = useQuery(tripQuery());
   const { prefs, setPrefs } = usePrefs();
   const [details, setDetails] = useState({
-    fullName: prefs.fullName,
-    homeCity: prefs.homeCity,
-    travelStyle: prefs.travelStyle,
+    fullName: "",
+  homeCity: "",
+  travelStyle: "Balanced",
   });
+   useEffect(() => {
+    setDetails({
+      fullName: prefs.fullName,
+      homeCity: prefs.homeCity,
+      travelStyle: prefs.travelStyle,
+    });
+  }, [prefs.fullName, prefs.homeCity, prefs.travelStyle]);
   const [open, setOpen] = useState<string | null>(null);
   const close = () => setOpen(null);
   const { user, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const { data: profile } = useQuery({
-    queryKey: ["profile", user?.id],
-    enabled: !!user,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("display_name, avatar_url")
-        .eq("id", user!.id)
-        .maybeSingle();
-      if (error) throw error;
-      return data;
-    },
-  });
 
   async function signOut() {
     await queryClient.cancelQueries();
@@ -105,7 +99,7 @@ function Profile() {
     navigate({ to: "/auth", replace: true });
   }
 
-  const displayName = profile?.display_name ?? user?.email?.split("@")[0] ?? "Explorer";
+  const displayName = prefs.fullName || user?.email?.split("@")[0] || "Explorer";
 
   const activeAlerts = Object.values(prefs.notifications).filter(Boolean).length;
 
@@ -142,20 +136,9 @@ function Profile() {
         <h1 className="text-2xl">Profile</h1>
 
         <Card className="flex items-center gap-3">
-          {profile?.avatar_url ? (
-            <img
-              src={profile.avatar_url}
-              alt={`${displayName} avatar`}
-              width={56}
-              height={56}
-              loading="lazy"
-              className="size-14 rounded-full object-cover"
-            />
-          ) : (
-            <span className="flex size-14 items-center justify-center rounded-full bg-primary-soft">
-              <User className="size-7 text-primary" />
-            </span>
-          )}
+         <span className="flex size-14 items-center justify-center rounded-full bg-primary-soft">
+  <User className="size-7 text-primary" />
+</span>
           <div className="min-w-0">
             <h2 className="truncate text-base">{displayName}</h2>
             <p className="truncate text-xs text-muted-foreground">

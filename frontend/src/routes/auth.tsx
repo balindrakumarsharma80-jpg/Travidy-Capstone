@@ -9,6 +9,15 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 
 export const Route = createFileRoute("/auth")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    trip: typeof search.trip === "string" ? search.trip : undefined,
+    share: typeof search.share === "string" ? search.share : undefined,
+    join:
+      search.join === true ||
+      search.join === "true" ||
+      search.join === "1",
+  }),
+  
   head: () => ({
     meta: [
       { title: "Sign in to Travidy — Save Your Trips" },
@@ -31,6 +40,25 @@ export const Route = createFileRoute("/auth")({
 
 function AuthPage() {
   const navigate = useNavigate();
+ const {
+  trip: searchTripId,
+  share: searchShare,
+  join: searchJoin,
+} = Route.useSearch();
+
+const [pendingShare] = useState(() => {
+  try {
+    const saved = sessionStorage.getItem("travidy_pending_share");
+    return saved
+      ? (JSON.parse(saved) as { trip?: string; share?: string; join?: boolean })
+      : {};
+  } catch {
+    return {};
+  }
+});
+const tripId = searchTripId;
+const share = searchShare;
+const join = searchJoin === true;
   const { isAuthenticated, loading } = useAuth();
 
   const [mode, setMode] = useState<"signin" | "signup">("signin");
@@ -43,12 +71,68 @@ function AuthPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!loading && isAuthenticated && !forgotPassword) {
-      navigate({ to: "/profile", replace: true });
-    }
-  }, [loading, isAuthenticated, forgotPassword, navigate]);
+ useEffect(() => {
+  if (loading || !isAuthenticated || forgotPassword) return;
 
+  const currentTripId = searchTripId ?? pendingShare.trip;
+ const shouldJoin = searchJoin === true || pendingShare.join === true;
+
+  if (shouldJoin && currentTripId) {
+    sessionStorage.removeItem("travidy_pending_share");
+
+    navigate({
+      to: "/trips/$tripId/join",
+      params: {
+        tripId: currentTripId,
+      },
+      replace: true,
+    });
+
+    return;
+  }
+
+  if (currentTripId) {
+    sessionStorage.removeItem("travidy_pending_share");
+
+    navigate({
+      to: "/itinerary",
+      search: {
+        trip: currentTripId,
+        ...(searchShare ? { share: searchShare } : {}),
+      },
+      replace: true,
+    });
+
+    return;
+  }
+
+  if (searchShare) {
+    navigate({
+      to: "/itinerary",
+      search: {
+        share: searchShare,
+      },
+      replace: true,
+    });
+
+    return;
+  }
+
+  navigate({
+    to: "/profile",
+    replace: true,
+  });
+}, [
+  loading,
+  isAuthenticated,
+  forgotPassword,
+  searchTripId,
+  searchShare,
+  searchJoin,
+  pendingShare.trip,
+  pendingShare.join,
+  navigate,
+]);
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -96,6 +180,35 @@ function AuthPage() {
         if (error) throw error;
 
         toast.success("Welcome back!");
+        if (join && tripId) {
+  navigate({
+    to: "/trips/$tripId/join",
+    params: {
+      tripId,
+    },
+    replace: true,
+  });
+} else if (tripId) {
+  navigate({
+    to: "/itinerary",
+    search: {
+      trip: tripId,
+      ...(share ? { share } : {}),
+    },
+    replace: true,
+  });
+} else if (share) {
+  navigate({
+    to: "/itinerary",
+    search: { share },
+    replace: true,
+  });
+} else {
+  navigate({
+    to: "/profile",
+    replace: true,
+  });
+}
       }
     } catch (err) {
       const message =
@@ -110,6 +223,49 @@ function AuthPage() {
     }
   }
 
+ async function onGoogle() {
+  setBusy(true);
+  setError(null);
+
+  if (tripId || join || share) {
+    sessionStorage.setItem(
+      "travidy_pending_share",
+      JSON.stringify({
+        trip: tripId,
+        share,
+        join,
+      }),
+    );
+  }
+
+  try {
+    const redirectTo = `${window.location.origin}/auth`;
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth`,
+      },
+    });
+
+    if (error) {
+      console.error("GOOGLE SIGN-IN ERROR:", error);
+      console.error("GOOGLE SIGN-IN ERROR MESSAGE:", error.message);
+      console.error("GOOGLE SIGN-IN ERROR NAME:", error.name);
+      console.error("GOOGLE SIGN-IN ERROR STATUS:", error.status);
+
+      setBusy(false);
+      setError(error.message || "Google sign-in failed.");
+      toast.error(error.message || "Google sign-in failed.");
+      return;
+    }
+  } catch (error) {
+    console.error("GOOGLE SIGN-IN EXCEPTION:", error);
+    setBusy(false);
+    setError("Google sign-in failed.");
+    toast.error("Google sign-in failed.");
+  }
+}
   function startForgotPassword() {
     setError(null);
     setForgotPassword(true);
@@ -149,6 +305,25 @@ function AuthPage() {
         </div>
 
         <Card className="space-y-3">
+          {!forgotPassword && (
+            <>
+              <button
+                type="button"
+                onClick={onGoogle}
+                disabled={busy}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-background py-3 text-xs font-bold"
+              >
+                Continue with Google
+              </button>
+
+              <div className="flex items-center gap-3 text-[10px] uppercase tracking-wide text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                or
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            </>
+          )}
+
           <form onSubmit={onSubmit} className="space-y-2.5">
             {mode === "signup" && !forgotPassword && (
               <input

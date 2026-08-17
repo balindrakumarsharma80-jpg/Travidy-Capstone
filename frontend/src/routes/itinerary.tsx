@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -20,7 +20,6 @@ import {
   Waves,
   BedDouble,
   Users,
-  UserPlus,
   CheckSquare,
   X,
 } from "lucide-react";
@@ -44,6 +43,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
 import {
   checklistQuery,
@@ -80,8 +80,11 @@ export const Route = createFileRoute("/itinerary")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  validateSearch: (search: Record<string, unknown>): { trip?: string } =>
-    typeof search["trip"] === "string" ? { trip: search["trip"] as string } : {},
+  validateSearch: (search: Record<string, unknown>): { trip?: string; share?: string } =>
+    ({
+      ...(typeof search['trip'] === 'string' ? { trip: search['trip'] as string } : {}),
+      ...(typeof search['share'] === 'string' ? { share: search['share'] as string } : {}),
+    }),
 
   loaderDeps: ({ search }) => ({ trip: search.trip }),
 loader: ({ context, deps }) => {
@@ -110,17 +113,28 @@ const bucketTone: Record<string, string> = {
   Sightseeing: "bg-primary",
   Other: "bg-muted-foreground",
 };
-
 function Itinerary() {
-  const qc = useQueryClient();
-  const { trip: tripParam } = Route.useSearch();
-  const tripId = tripParam;
-  const isGuest = !tripId;
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { trip: tripParam, share } = Route.useSearch();
+  
+
+const tripId = tripParam ?? undefined;
+  
+const { user, isAuthenticated, loading: authLoading } = useAuth();
+  const isGuest = !isAuthenticated || !tripId;
+  
+  console.log("ITINERARY SHARE DEBUG:", {
+  tripParam,
+  tripId,
+  share,
+  isAuthenticated,
+});
   const { data: trip } = useQuery({
   ...tripQuery(tripId),
   enabled: !!tripId,
 });
-  const { data: items = [] } = useQuery({
+ const { data: dbItems = [] } = useQuery({
   ...itineraryQuery(tripId),
   enabled: !!tripId,
 });
@@ -134,10 +148,11 @@ function Itinerary() {
 });
 const [guestItems, setGuestItems] = useState<any[]>([]);
 useEffect(() => {
-  if (!isGuest) return;
+  if (!isGuest || typeof window === "undefined") return;
 
   try {
-    const saved = localStorage.getItem("travidy_guest_itinerary");
+    const saved = window.localStorage.getItem("travidy_guest_itinerary");
+
     if (saved) {
       setGuestItems(JSON.parse(saved));
     }
@@ -146,13 +161,44 @@ useEffect(() => {
   }
 }, [isGuest]);
 
-const displayItems = isGuest ? guestItems : items;
+const displayItems = isGuest
+  ? guestItems.map((item) => ({
+      ...item,
+      day: Number(item.day_number ?? 1),
+      title: item.name,
+      place: item.name,
+      category: item.category ?? "activity",
+      price_label: item.price_label ?? null,
+      duration: item.duration ?? null,
+      status: item.status ?? "planned",
+      time_label: null,
+      order_index: item.order_index ?? 99,
+    }))
+  : dbItems;
+
+  const calculatedBudget = displayItems.reduce((total, item) => {
+  const price = String(item.price_label ?? "")
+    .replace(/,/g, "")
+    .match(/\d+(?:\.\d+)?/);
+
+  return total + (price ? Number(price[0]) : 0);
+}, 0);
+
 const currentTrip = trip ?? {
   title: "My Trip",
-  days: Math.max(1, ...guestItems.map((item) => Number(item.day ?? 1))),
+  days: Math.max(
+  1,
+  ...guestItems.map((item) => Number(item.day_number ?? 1))
+),
   travelers: 1,
-  budget: 0,
-  budget_amount: 0,
+  budget:
+  typeof window !== "undefined"
+    ? Number(window.localStorage.getItem("travidy_guest_budget") ?? 0)
+    : 0,
+  budget_amount:
+  typeof window !== "undefined"
+    ? Number(window.localStorage.getItem("travidy_guest_budget") ?? 0)
+    : 0,
   spent: 0,
   spent_amount: 0,
   destination: "Your Trip",
@@ -163,7 +209,236 @@ const currentTrip = trip ?? {
   travelers_label: "",
   share_token: null,
 };
+console.log("SHARE DEBUG:", {
+  tripId,
+  trip,
+  currentTripShareToken: currentTrip.share_token,
+});
+
+const tripBudget =
+  Number(currentTrip.budget_amount) > 0
+    ? Number(currentTrip.budget_amount)
+    : Number(currentTrip.budget ?? 0);
+
+    const createGuestTripForSharing = async () => {
+  try {
+    const savedItems = JSON.parse(
+      localStorage.getItem("travidy_guest_itinerary") ?? "[]"
+    );
+
+    const savedBudget = Number(
+      localStorage.getItem("travidy_guest_budget") ?? 0
+    );
+
+    if (!savedItems.length) {
+      toast.error("Add at least one item to your itinerary before sharing.");
+      return null;
+    }
+
+    const destinationDbId =
+      currentTrip.destination?.toLowerCase() === "rishikesh"
+        ? "2f634884-ba98-4c6b-9b1f-0a485172c9c3"
+        : null;
+
+    if (!destinationDbId) {
+      toast.error(
+        `No database destination found for "${currentTrip.destination}".`
+      );
+      return null;
+    }
+
+    const shareToken = crypto.randomUUID();
+
+    const { data: newTrip, error: tripError } = await supabase
+      .from("trips")
+      .insert({
+        user_id: user?.id ?? null,
+        destination_id: destinationDbId,
+        title: currentTrip.title || `${currentTrip.destination} Trip`,
+        start_date: currentTrip.start_date,
+        end_date: currentTrip.end_date,
+        travellers: Math.max(
+          1,
+          Number(currentTrip.travelers ?? currentTrip.travellers ?? 1)
+        ),
+        budget_amount: savedBudget,
+        spent_amount: 0,
+        status: "draft",
+        share_token: shareToken,
+      } as never)
+      .select("id, share_token")
+      .single();
+
+    if (tripError || !newTrip) {
+      console.error("CREATE SHARE TRIP ERROR:", tripError);
+      toast.error(tripError?.message ?? "Could not create shareable trip.");
+      return null;
+    }
+
+    const itemsToInsert = savedItems.map(
+      (item: any, index: number) => ({
+        trip_id: newTrip.id,
+        day_number: Number(item.day_number ?? 1),
+        place_name: item.name,
+        notes: item.subtitle ?? null,
+        category: item.category ?? "activity",
+        price_label: item.price_label ?? null,
+        item_status: "planned",
+        source: "agent",
+        order_index: index,
+      })
+    );
+
+    const { error: itemsError } = await supabase
+      .from("itinerary_items")
+      .insert(itemsToInsert as never);
+
+    if (itemsError) {
+      console.error("CREATE SHARE ITEMS ERROR:", itemsError);
+
+      await supabase
+        .from("trips")
+        .delete()
+        .eq("id", newTrip.id);
+
+      toast.error(itemsError.message ?? "Could not save itinerary items.");
+      return null;
+    }
+
+    localStorage.setItem("travidy_trip_id", newTrip.id);
+
+    localStorage.removeItem("travidy_guest_itinerary");
+    localStorage.removeItem("travidy_guest_budget");
+
+    return {
+      tripId: newTrip.id as string,
+      shareToken: newTrip.share_token as string,
+    };
+  } catch (error) {
+    console.error("CREATE GUEST SHARE TRIP FAILED:", error);
+    toast.error("Could not prepare your trip for sharing.");
+    return null;
+  }
+};
+
+
   const [shareOpen, setShareOpen] = useState(false);
+  useEffect(() => {
+  if (
+    !isAuthenticated ||
+    authLoading ||
+    tripId ||
+    share !== "true"
+  ) {
+    return;
+  }
+
+  async function createTripFromGuestData() {
+    try {
+      const savedItems = localStorage.getItem("travidy_guest_itinerary");
+      const savedBudget = localStorage.getItem("travidy_guest_budget");
+
+      if (!savedItems) {
+        toast.error("No guest trip data found.");
+        return;
+      }
+
+      const guestItems = JSON.parse(savedItems);
+
+      if (!Array.isArray(guestItems) || guestItems.length === 0) {
+        toast.error("No guest itinerary found.");
+        return;
+      }
+
+      /*
+       * Your current guest itinerary is Rishikesh.
+       * Use the same destination ID that planner.tsx already uses.
+       */
+      const destinationId =
+        "2f634884-ba98-4c6b-9b1f-0a485172c9c3";
+
+      const shareToken = crypto.randomUUID();
+
+      const { data: newTrip, error: tripError } = await supabase
+        .from("trips")
+        .insert({
+          user_id: user?.id,
+          destination_id: destinationId,
+          title: "My Trip",
+          travellers: 1,
+          budget_amount: Number(savedBudget ?? 0),
+          spent_amount: 0,
+          status: "draft",
+          share_token: shareToken,
+        } as never)
+        .select("id")
+        .single();
+
+      if (tripError) {
+        console.error("CREATE GUEST TRIP ERROR:", tripError);
+        throw tripError;
+      }
+
+      const itemsToInsert = guestItems.map((item: any, index: number) => ({
+        trip_id: newTrip.id,
+        day_number: Number(item.day_number ?? 1),
+        place_name: item.name,
+        notes: item.subtitle ?? null,
+        category: item.category ?? "activity",
+        price_label: item.price_label ?? null,
+        item_status: item.status ?? "planned",
+        source: "agent",
+        order_index: item.order_index ?? index,
+      }));
+
+      const { error: itemsError } = await supabase
+        .from("itinerary_items")
+        .insert(itemsToInsert as never);
+
+      if (itemsError) {
+        console.error("CREATE GUEST ITINERARY ERROR:", itemsError);
+        throw itemsError;
+      }
+
+      // Save the real trip ID for future use.
+      localStorage.setItem("travidy_trip_id", newTrip.id);
+
+      // Guest data is now persisted in Supabase.
+      localStorage.removeItem("travidy_guest_itinerary");
+      localStorage.removeItem("travidy_guest_budget");
+      sessionStorage.removeItem("travidy_pending_share");
+
+      toast.success("Your trip is now saved!");
+
+      navigate({
+        to: "/itinerary",
+        search: {
+          trip: newTrip.id,
+          share: "true",
+        },
+        replace: true,
+      });
+    } catch (error) {
+      console.error("GUEST SHARE MIGRATION ERROR:", error);
+
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Couldn't save your trip."
+      );
+    }
+  }
+
+  void createTripFromGuestData();
+}, [
+  isAuthenticated,
+  authLoading,
+  tripId,
+  share,
+  user?.id,
+  navigate,
+]);
+
   const [day, setDay] = useState(1);
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -174,7 +449,12 @@ const currentTrip = trip ?? {
   title: currentTrip.title,
   days: currentTrip.days,
   travelers: currentTrip.travellers ?? currentTrip.travelers ?? 1,
-  budget: currentTrip.budget_amount ?? currentTrip.budget ?? 0,
+  budget:
+  Number(currentTrip.budget_amount) > 0
+    ? Number(currentTrip.budget_amount)
+    : Number(currentTrip.budget ?? 0),
+  start_date: currentTrip.start_date ?? "",
+  end_date: currentTrip.end_date ?? "",
 });
 
   const dayItems = displayItems.filter((i) => i.day === day);
@@ -245,7 +525,7 @@ const currentTrip = trip ?? {
       );
 
       setGuestItems(updated);
-      localStorage.setItem(
+      window.localStorage.setItem(
         "travidy_guest_itinerary",
         JSON.stringify(updated)
       );
@@ -255,7 +535,7 @@ const currentTrip = trip ?? {
 
     const { error } = await supabase
       .from("itinerary_items")
-      .update({ status } as never)
+      .update({ item_status: status } as never)
       .eq("id", id);
 
     if (error) throw error;
@@ -276,44 +556,56 @@ const currentTrip = trip ?? {
   onError: () => toast.error("Couldn't update that activity."),
 });
 
-  const removeItem = useMutation({
-  mutationFn: async (id: string) => {
-    if (isGuest) {
-      const updated = guestItems.filter((item) => item.id !== id);
+    const removeItem = useMutation({
+    mutationFn: async (id: string) => {
+      if (isGuest) {
+        const updated = guestItems.filter((item) => item.id !== id);
 
-      setGuestItems(updated);
-      localStorage.setItem(
-        "travidy_guest_itinerary",
-        JSON.stringify(updated)
+        setGuestItems(updated);
+        window.localStorage.setItem(
+          "travidy_guest_itinerary",
+          JSON.stringify(updated)
+        );
+
+        return;
+      }
+
+      const { error } = await supabase
+        .from("itinerary_items")
+        .delete()
+        .eq("id", id);
+
+      if (error) throw error;
+    },
+
+    onSuccess: (_data, deletedId) => {
+      // Remove the activity from the screen immediately.
+      queryClient.setQueryData(
+        itineraryQuery(tripId).queryKey,
+        (old: ItineraryItem[] | undefined) =>
+          old?.filter((item) => item.id !== deletedId) ?? []
       );
 
-      return;
-    }
+      toast.success("Removed from your plan");
 
-    const { error } = await supabase
-      .from("itinerary_items")
-      .delete()
-      .eq("id", id);
+      // Refresh from Supabase in the background.
+      if (!isGuest) {
+        queryClient.invalidateQueries({
+          queryKey: itineraryQuery(tripId).queryKey,
+        });
+      }
+    },
 
-    if (error) throw error;
-  },
-
-  onSuccess: () => {
-    if (!isGuest) {
-      invalidate("itinerary");
-    }
-
-    toast.success("Removed from your plan");
-  },
-
-  onError: () => toast.error("Couldn't remove that activity."),
-});
-
+    onError: (error) => {
+      console.error("REMOVE ACTIVITY ERROR:", error);
+      toast.error("Couldn't remove that activity.");
+    },
+  });
  const clearPlan = useMutation({
   mutationFn: async () => {
     if (isGuest) {
       setGuestItems([]);
-      localStorage.removeItem("travidy_guest_itinerary");
+      window.localStorage.removeItem("travidy_guest_itinerary");
       return;
     }
 
@@ -352,30 +644,30 @@ const currentTrip = trip ?? {
   });
 
   const saveTrip = useMutation({
-    mutationFn: async () => {
-      if (isGuest || !tripId) return;
-      const { error } = await supabase
-        .from("trips")
-        .update({
-          title: details.title,
-          days: details.days,
-          travelers: details.travelers,
-          travellers: details.travelers,
-          travelers_label: `${details.travelers} Traveller${details.travelers > 1 ? "s" : ""}`,
-          budget: details.budget,
-          budget_amount: details.budget,
-        } as never)
-        .eq("id", tripId);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      invalidate("trip");
-      setEditOpen(false);
-      if (day > details.days) setDay(1);
-      toast.success("Trip details updated");
-    },
-    onError: () => toast.error("Couldn't save your trip details."),
-  });
+  mutationFn: async () => {
+    const { error } = await supabase
+      .from("trips")
+      .update({
+        title: details.title,
+        travellers: Math.max(1, details.travelers),
+        budget_amount: Math.max(0, details.budget),
+      } as never)
+      .eq("id", tripId);
+
+    if (error) throw error;
+  },
+
+  onSuccess: () => {
+    invalidate("trip");
+    setEditOpen(false);
+    toast.success("Trip details updated");
+  },
+
+  onError: (error) => {
+    console.error("UPDATE TRIP ERROR:", error);
+    toast.error("Couldn't save your trip details.");
+  },
+});
 
   // Spend is derived from what you have actually planned — nothing is assumed.
   const buckets = new Map<string, number>();
@@ -387,7 +679,6 @@ const currentTrip = trip ?? {
     .filter(([, amount]) => amount > 0)
     .map(([label, amount]) => ({ label, amount, tone: bucketTone[label] ?? "bg-primary" }));
   const spentTotal = budget.reduce((s, b) => s + b.amount, 0);
-  const budgetTotal = currentTrip.budget_amount ?? currentTrip.budget;
 
   // Keep the persisted spend in step with what is actually planned.
   useEffect(() => {
@@ -398,37 +689,76 @@ const currentTrip = trip ?? {
       .update({ spent: spentTotal, spent_amount: spentTotal } as never)
       .eq("id", tripId);
   }, [isGuest, spentTotal, currentTrip.spent_amount, currentTrip .spent, tripId]);
-
+const shareToken = trip?.share_token ?? currentTrip.share_token ?? "";
  const shareUrl =
-  !isGuest && typeof window !== "undefined"
-    ? `${window.location.origin}/shared/${currentTrip.share_token}`
+  typeof window !== "undefined" && shareToken
+    ? `${window.location.origin}/shared/${shareToken}`
     : "";
+    console.log("FINAL SHARE URL:", shareUrl);
   const inviteUrl =
-  !isGuest && typeof window !== "undefined"
+  typeof window !== "undefined" && tripId
     ? `${window.location.origin}/trips/${tripId}/join`
     : "";
   const copy = async (url: string, label: string) => {
-    await navigator.clipboard.writeText(url);
-    toast.success(`${label} copied`);
-  };
+  if (!url) {
+    toast.error(`No ${label.toLowerCase()} available`);
+    return;
+  }
+
+  await navigator.clipboard.writeText(url);
+  toast.success(`${label} copied`);
+};
 
   const catalogDest = destinations.find(
     (d) => d.name.toLowerCase() === currentTrip.destination.toLowerCase(),
   );
   const planDest = catalogDest?.id;
 
-  const share = async () => {
-    const url = window.location.href;
-    try {
-      if (navigator.share) await navigator.share({ title: currentTrip.title, url });
-      else {
-        await navigator.clipboard.writeText(url);
-        toast.success("Trip link copied — share it with your travel buddies");
-      }
-    } catch {
-      /* dismissed */
+  
+  const shareTrip = async () => {
+  if (!shareUrl) {
+    toast.error("Read-only share link is not available yet.");
+    return;
+  }
+
+  try {
+    if (navigator.share) {
+      await navigator.share({
+        title: currentTrip.title,
+        url: shareUrl,
+      });
+    } else {
+      await navigator.clipboard.writeText(shareUrl);
+      toast.success("Read-only trip link copied");
     }
-  };
+  } catch {
+    /* dismissed */
+  }
+};
+
+const shareLink = async (url: string, label: string) => {
+  if (!url) {
+    toast.error(`${label} is not available yet.`);
+    return;
+  }
+
+  try {
+    if (navigator.share) {
+      await navigator.share({
+        title: currentTrip.title,
+        url,
+      });
+    } else {
+      await navigator.clipboard.writeText(url);
+      toast.success(`${label} copied`);
+    }
+  } catch (error) {
+    if ((error as Error)?.name !== "AbortError") {
+      console.error("SHARE LINK ERROR:", error);
+      toast.error(`Couldn't share ${label.toLowerCase()}.`);
+    }
+  }
+};
 
   const navigateTo = (item: ItineraryItem) => {
     const q = encodeURIComponent(`${item.title} ${item.place ?? currentTrip.destination}`);
@@ -436,48 +766,43 @@ const currentTrip = trip ?? {
   };
 
   const downloadPdf = () => {
-    const ok = exportItineraryPdf(currentTrip, displayItems, checklist);
-    if (ok) toast.success("Choose “Save as PDF” in the print dialog");
-    else toast.error("Allow pop-ups to export your itinerary.");
-  };
+  const ok = exportItineraryPdf(currentTrip, displayItems, checklist);
+  if (ok) toast.success("Choose Save as PDF");
+};
+
 
   return (
     <PhoneShell>
       <header className="sticky top-0 z-20 flex items-start justify-between gap-2 border-b border-border bg-surface/95 px-4 py-3 backdrop-blur">
         <Link
-          to="/planner"
-          search={{ dest: planDest }}
-          aria-label="Back"
-          className="mt-1 text-foreground"
+         to="/planner"
+         search={{ dest: planDest, trip: tripId }}
+        aria-label="Back"
+        className="mt-1 text-foreground"
         >
           <ArrowLeft className="size-6" />
         </Link>
         <div className="min-w-0 flex-1">
-          <button
-            onClick={() => {
-              setDetails({
-               title: currentTrip.title,
-               days: currentTrip.days,
-              travelers: currentTrip.travelers,
-              budget: currentTrip.budget,
-              });
-              setEditOpen(true);
-            }}
-            className="flex max-w-full items-center gap-1.5 text-left"
-          >
-            <h1 className="truncate text-lg">{currentTrip.title}</h1>
-            <Pencil className="size-4 shrink-0 text-primary" />
-          </button>
-          <p className="truncate text-xs text-muted-foreground">
-            {dateRange(currentTrip.start_date, currentTrip.end_date)} • {currentTrip.travelers} Travelers
-          </p>
+          <h1 className="truncate text-lg">{currentTrip.title}</h1>
         </div>
         <button
-          onClick={() => void share()}
-          className="flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-semibold text-primary"
-        >
-          <Share2 className="size-3.5" /> Share
-        </button>
+ onClick={async () => {
+  if (!isAuthenticated) {
+    navigate({
+      to: "/auth",
+      search: {
+        share: "true",
+      },
+    });
+    return;
+  }
+
+  setShareOpen(true);
+}}
+  className="flex items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs font-semibold text-primary"
+>
+  <Share2 className="size-3.5" /> Share
+</button>
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label="More"
@@ -532,14 +857,15 @@ const currentTrip = trip ?? {
                 <Fact
                   icon={Calendar}
                   label={`${currentTrip.days} Days`}
-                  sub={dateRange(currentTrip.start_date, currentTrip.end_date)}
+                  sub=""
                 />
                 <Fact
                   icon={Users}
-                  label={`${currentTrip.travelers} Travelers`}
-                  sub={currentTrip.travelers_label ?? ""}
+                  label={`${currentTrip.travelers} ${
+    currentTrip.travelers === 1 ? "Traveler" : "Travelers"
+  }`}
                 />
-                <Fact icon={Wallet} label={inr(currentTrip.budget)} sub="Budget" />
+                <Fact icon={Wallet} label={inr(tripBudget)} sub="Budget" />
               </dl>
             </div>
           </div>
@@ -562,7 +888,6 @@ const currentTrip = trip ?? {
               }`}
             >
               <span className="block text-sm font-bold tracking-wide">DAY {d}</span>
-              <span className="block text-[11px]">{dayLabel(currentTrip.start_date, d)}</span>
             </button>
           ))}
         </nav>
@@ -572,7 +897,7 @@ const currentTrip = trip ?? {
             <h2 className="text-base">{day === 1 ? "Today's Itinerary" : `Day ${day} Plan`}</h2>
             <Link
               to="/planner"
-              search={{ dest: planDest }}
+              search={{ dest: planDest, trip: tripId }}
               className="flex items-center gap-1 rounded-full border border-primary px-3 py-1.5 text-xs font-semibold text-primary"
             >
               <Plus className="size-3.5" /> Add Activity
@@ -821,7 +1146,7 @@ const currentTrip = trip ?? {
           <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm">
             <span className="text-muted-foreground">Remaining Budget</span>
             <span className="font-display text-lg font-bold text-primary">
-              {inr(budgetTotal - spentTotal)}
+              {inr(tripBudget - spentTotal)}
             </span>
           </div>
         </Card>
@@ -848,21 +1173,8 @@ const currentTrip = trip ?? {
               ? "No collaborators yet — invite whoever is travelling with you."
               : `${collaborators.length} collaborator${collaborators.length > 1 ? "s" : ""} on this trip.`}
           </p>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <button
-              onClick={() => copy(shareUrl, "Read-only link")}
-              className="flex items-center gap-1 rounded-xl border border-border px-3 py-2 font-semibold"
-            >
-              <Share2 className="size-3.5 text-primary" /> Read-only link
-            </button>
-            <button
-              onClick={() => copy(inviteUrl, "Invite link")}
-              className="flex items-center gap-1 rounded-xl border border-border px-3 py-2 font-semibold"
-            >
-              <UserPlus className="size-3.5 text-primary" /> Invite to edit
-            </button>
-          </div>
         </Card>
+
 
         <Card className="flex items-center justify-between gap-3">
           <div>
@@ -908,7 +1220,7 @@ const currentTrip = trip ?? {
           </form>
         </DialogContent>
       </Dialog>
-
+    
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
         <DialogContent className="max-w-[380px] rounded-2xl">
           <DialogHeader>
@@ -921,31 +1233,91 @@ const currentTrip = trip ?? {
             <div className="space-y-1.5">
               <Label>Read-only link</Label>
               <div className="flex gap-2">
-                <Input readOnly value={shareUrl} />
-                <Button variant="outline" onClick={() => copy(shareUrl, "Read-only link")}>
-                  Copy
-                </Button>
+                <Input
+  readOnly
+  value={shareUrl}
+  placeholder="Generating share link..."
+  className="text-xs"
+/>
+                <div className="flex gap-2">
+  <Button
+    type="button"
+    variant="outline"
+    onClick={() => copy(shareUrl, "Read-only link")}
+  >
+    Copy
+  </Button>
+
+  <Button
+    type="button"
+    onClick={() => shareLink(shareUrl, "Read-only link")}
+  >
+    <Share2 className="mr-1.5 size-4" />
+    Share
+  </Button>
+</div>
               </div>
             </div>
-            <div className="space-y-1.5">
-              <Label>Invite link (edit access)</Label>
-              <div className="flex gap-2">
-                <Input readOnly value={inviteUrl} />
-                <Button variant="outline" onClick={() => copy(inviteUrl, "Invite link")}>
-                  Copy
-                </Button>
+            <div className="space-y-2">
+  <Label>Invite someone to edit</Label>
+  <p className="text-xs text-muted-foreground">
+    Send this link to your travel companion. They can join the trip and edit the itinerary.
+  </p>
+
+  <div className="flex gap-2">
+  <Input
+    readOnly
+    value={inviteUrl}
+    placeholder="Generating invite link..."
+  />
+
+  <Button
+    type="button"
+    variant="outline"
+    onClick={() => copy(inviteUrl, "Invite link")}
+  >
+    Copy
+  </Button>
+
+  <Button
+    type="button"
+    onClick={() => shareLink(inviteUrl, "Invite link")}
+  >
+    <Share2 className="mr-1.5 size-4" />
+    Share
+  </Button>
+</div>
+</div>
+            <div className="rounded-xl border border-border bg-muted/40 p-3">
+              <div className="flex items-center gap-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary-soft text-primary">
+                  <Users className="size-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold">Collaborators</p>
+                  <p className="text-xs text-muted-foreground">
+                    {collaborators.length === 0
+                      ? "Nobody has joined yet."
+                      : `${collaborators.length} person${collaborators.length > 1 ? "s" : ""} can edit this trip.`}
+                  </p>
+                </div>
               </div>
-            </div>
-            <div>
-              <Label>Collaborators</Label>
-              {collaborators.length === 0 ? (
-                <p className="mt-1 text-xs text-muted-foreground">Nobody has joined yet.</p>
-              ) : (
-                <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
+
+              {collaborators.length > 0 && (
+                <ul className="mt-3 space-y-2 border-t border-border pt-3">
                   {collaborators.map((c) => (
-                    <li key={c.id} className="flex items-center justify-between">
-                      <span className="truncate">{c.user_id.slice(0, 8)}…</span>
-                      <span className="capitalize">{c.role}</span>
+                    <li key={c.id} className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface text-[10px] font-bold text-primary">
+                          {c.user_id === user?.id ? "You" : "C"}
+                        </div>
+                        <span className="truncate text-xs font-medium">
+                          {c.user_id === user?.id ? "You" : "Trip collaborator"}
+                        </span>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-primary-soft px-2 py-1 text-[10px] font-semibold capitalize text-primary">
+                        {c.role}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -954,7 +1326,10 @@ const currentTrip = trip ?? {
           </div>
         </DialogContent>
       </Dialog>
-
+      
+            <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        
+      </Dialog>
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="max-w-[380px] rounded-2xl">
           <DialogHeader>
@@ -967,17 +1342,15 @@ const currentTrip = trip ?? {
               <Input
                 id="it-title"
                 value={details.title}
-                onChange={(e) => setDetails((d) => ({ ...d, title: e.target.value }))}
+                readOnly
+                className="bg-muted"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="it-days">Days</Label>
+                <Label>Days</Label>
                 <Input
-                  id="it-days"
                   type="number"
-                  min={1}
-                  max={14}
                   value={details.days}
                   onChange={(e) =>
                     setDetails((d) => ({ ...d, days: Math.max(1, Number(e.target.value)) }))
@@ -1008,6 +1381,31 @@ const currentTrip = trip ?? {
                 onChange={(e) => setDetails((d) => ({ ...d, budget: Number(e.target.value) }))}
               />
             </div>
+            <div className="grid grid-cols-2 gap-3">
+  <div className="space-y-1.5">
+    <Label htmlFor="it-start-date">Start Date</Label>
+    <Input
+      id="it-start-date"
+      type="date"
+      value={details.start_date}
+      onChange={(e) =>
+        setDetails((d) => ({ ...d, start_date: e.target.value }))
+      }
+    />
+  </div>
+
+  <div className="space-y-1.5">
+    <Label htmlFor="it-end-date">End Date</Label>
+    <Input
+      id="it-end-date"
+      type="date"
+      value={details.end_date}
+      onChange={(e) =>
+        setDetails((d) => ({ ...d, end_date: e.target.value }))
+      }
+    />
+  </div>
+  </div>
           </div>
           <DialogFooter>
             <Button onClick={() => saveTrip.mutate()} disabled={saveTrip.isPending}>
@@ -1058,3 +1456,7 @@ function Fact({ icon: Icon, label, sub }: { icon: typeof Calendar; label: string
     </div>
   );
 }
+
+
+
+

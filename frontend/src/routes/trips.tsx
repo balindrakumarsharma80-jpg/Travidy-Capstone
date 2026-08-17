@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet,  useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarDays,
@@ -101,7 +101,9 @@ function MyTrips() {
     )
     .sort((a, b) => {
       if (sort === "date") return a.start_date.localeCompare(b.start_date);
-      if (sort === "budget") return (b.budget_amount ?? b.budget) - (a.budget_amount ?? a.budget);
+      if (sort === "budget") {
+  return (b.budget_amount ?? 0) - (a.budget_amount ?? 0);
+}
       return b.created_at.localeCompare(a.created_at);
     });
 
@@ -121,27 +123,51 @@ function MyTrips() {
         status: draft.status,
       });
     },
-    onSuccess: (id) => {
-      qc.invalidateQueries({ queryKey: ["my-trips"] });
-      setOpen(false);
-      setDraft(emptyDraft);
-      toast.success("Trip created");
-      navigate({ to: "/itinerary", search: { trip: id } });
+   onSuccess: (id) => {
+  // Remember the current trip even when logged out
+  localStorage.setItem("travidy_trip_id", id);
+
+  qc.invalidateQueries({ queryKey: ["my-trips"] });
+  setOpen(false);
+  setDraft(emptyDraft);
+  toast.success("Trip created");
+
+  navigate({
+    to: "/planner",
+    search: {
+      trip: id,
     },
+  });
+},
     onError: () => toast.error("Couldn't create that trip. Please try again."),
   });
 
-  const remove = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from("trips").delete().eq("id", id);
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["my-trips"] });
-      toast.success("Trip deleted");
-    },
-    onError: () => toast.error("Couldn't delete that trip."),
-  });
+ const remove = useMutation({
+  mutationFn: async (id: string) => {
+    if (!user) throw new Error("not signed in");
+
+    const { error } = await supabase
+      .from("trips")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", user.id);
+
+    if (error) {
+      console.error("DELETE TRIP ERROR:", error);
+      throw error;
+    }
+  },
+
+  onSuccess: () => {
+    qc.invalidateQueries({ queryKey: ["my-trips", user?.id] });
+    toast.success("Trip deleted");
+  },
+
+  onError: (error) => {
+    console.error("DELETE TRIP ERROR:", error);
+    toast.error("Couldn't delete this trip.");
+  },
+});
 
   const copyShare = async (token: string) => {
     const url = `${window.location.origin}/shared/${token}`;
@@ -152,6 +178,7 @@ function MyTrips() {
   return (
     <PhoneShell>
       <AppHeader />
+       <Outlet />
       <div className="space-y-4 p-4 pb-24">
         <div className="flex items-end justify-between gap-3">
           <div>
@@ -279,7 +306,7 @@ function MyTrips() {
                     <div className="flex items-start gap-1.5">
                       <Wallet className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
                       <div className="min-w-0">
-                        <dt className="font-semibold">{inr(t.budget_amount ?? t.budget)}</dt>
+                        <dt className="font-semibold">{inr(t.budget_amount ?? 0)}</dt>
                         <dd className="truncate text-muted-foreground">{t.budget_tier}</dd>
                       </div>
                     </div>

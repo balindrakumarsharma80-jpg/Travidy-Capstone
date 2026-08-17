@@ -13,14 +13,11 @@ export type TripRow = {
   region: string | null;
   start_date: string;
   end_date: string;
-  days: number;
-  travelers: number;
   travellers: number;
   budget_tier: string | null;
   status: string;
   budget_amount: number;
   spent_amount: number;
-  budget: number;
   spent: number;
   share_token: string;
   created_at: string;
@@ -90,33 +87,34 @@ const dayCount = (start: string, end: string) => {
   const ms = new Date(end).getTime() - new Date(start).getTime();
   return Math.max(1, Math.round(ms / 86_400_000) + 1);
 };
+const DESTINATION_DB_IDS: Record<string, string> = {
+  rishikesh: "2f634884-ba98-4c6b-9b1f-0a485172c9c3",
+};
 
 /** Creates a trip owned by the signed-in traveller and returns its id. */
 export async function createTrip(input: NewTripInput) {
   const catalog = findDestination(input.destinationId) ?? destinations[0]!;
-  const days = dayCount(input.startDate, input.endDate);
+  const destinationDbId = DESTINATION_DB_IDS[input.destinationId];
+  if (!destinationDbId) {
+  throw new Error(
+    `No database destination found for "${input.destinationId}"`
+  );
+}
 
-  const { data, error } = await supabase
-    .from("trips")
-    .insert({
-      user_id: input.userId,
-      title: input.title,
-      destination: catalog.name,
-      region: catalog.categories[0] ?? null,
-      start_date: input.startDate,
-      end_date: input.endDate,
-      days,
-      travelers: input.travellers,
-      travellers: input.travellers,
-      travelers_label: `${input.travellers} Traveller${input.travellers > 1 ? "s" : ""}`,
-      budget: input.budgetAmount,
-      budget_amount: input.budgetAmount,
-      spent: 0,
-      spent_amount: 0,
-      budget_tier: input.budgetTier,
-      status: input.status,
-      weather: catalog.bestTime,
-    } as never)
+ const { data, error } = await supabase
+  .from("trips")
+  .insert({
+    user_id: input.userId,
+    destination_id: destinationDbId,
+    title: input.title,
+    start_date: input.startDate,
+    end_date: input.endDate,
+    travellers: input.travellers,
+    budget_amount: input.budgetAmount,
+    spent_amount: 0,
+    budget_tier: input.budgetTier,
+    status: input.status,
+  } as never)
     .select("id")
     .single();
 
@@ -125,8 +123,15 @@ export async function createTrip(input: NewTripInput) {
 }
 
 /** Catalog destination id for a trip, so planner links stay in sync. */
-export const catalogIdFor = (destinationName: string) =>
-  destinations.find((d) => d.name.toLowerCase() === destinationName.toLowerCase())?.id;
+export const catalogIdFor = (destinationName?: string | null) => {
+  if (!destinationName) return undefined;
+
+  const normalized = destinationName.trim().toLowerCase();
+
+  return destinations.find(
+    (d) => d.name?.trim().toLowerCase() === normalized
+  )?.id;
+};
 
 export const tripDates = (t: { start_date: string; end_date: string }) => {
   const f = (s: string) =>

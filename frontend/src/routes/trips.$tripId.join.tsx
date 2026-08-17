@@ -33,22 +33,47 @@ function JoinTrip() {
   const { user, isAuthenticated, loading } = useAuth();
 
   const join = useMutation({
-    mutationFn: async () => {
-      if (!user) throw new Error("not signed in");
-      const { error } = await supabase
-        .from("trip_collaborators")
-        .upsert({ trip_id: tripId, user_id: user.id, role: "editor" } as never, {
-          onConflict: "trip_id,user_id",
-        });
-      if (error) throw error;
-    },
-    onSuccess: () => {
-      toast.success("You're on the trip");
-      navigate({ to: "/itinerary", search: { trip: tripId } });
-    },
-    onError: () => toast.error("Couldn't join this trip. Ask the owner to re-send the invite."),
-  });
+  mutationFn: async () => {
+    if (!user) throw new Error("not signed in");
 
+    const { data: existing, error: checkError } = await supabase
+      .from("trip_collaborators")
+      .select("trip_id, user_id, role")
+      .eq("trip_id", tripId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (checkError) throw checkError;
+
+    // Already a collaborator — nothing to insert.
+    if (existing) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from("trip_collaborators")
+      .insert({
+        trip_id: tripId,
+        user_id: user.id,
+        role: "editor",
+      } as never);
+
+    if (error) throw error;
+  },
+
+  onSuccess: () => {
+    toast.success("You're on the trip");
+    navigate({
+      to: "/itinerary",
+      search: { trip: tripId },
+    });
+  },
+
+  onError: (error) => {
+    console.error("JOIN TRIP ERROR:", error);
+    toast.error("Couldn't join this trip. Ask the owner to re-send the invite.");
+  },
+});
   useEffect(() => {
     if (isAuthenticated && !join.isPending && !join.isSuccess) join.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,16 +99,18 @@ function JoinTrip() {
             </>
           ) : (
             <>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Sign in first — collaborators are linked to your account.
-              </p>
-              <Link
-                to="/auth"
-                className="mt-4 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-xs font-bold text-primary-foreground"
-              >
-                <LogIn className="size-4" /> Sign in
-              </Link>
-            </>
+  <p className="mt-1 text-xs text-muted-foreground">
+    Sign in first — collaborators are linked to your account.
+  </p>
+
+  <a
+   href={`/auth?trip=${tripId}&join=true`}
+  className="mt-4 inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-xs font-bold text-primary-foreground"
+>
+  <LogIn className="size-4" />
+  Sign in
+</a>
+</>
           )}
         </Card>
       </div>

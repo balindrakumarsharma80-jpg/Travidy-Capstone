@@ -91,14 +91,9 @@ async function pushPreferences() {
   if (!userId) return;
   await supabase.from("user_preferences").upsert(
     {
-      user_id: userId,
-      trip_reminders: state.notifications.tripReminders,
-      price_alerts: state.notifications.priceAlerts,
-      chat_updates: state.notifications.chatUpdates,
-      promo_alerts: state.notifications.promoAlerts,
+     user_id: userId,
       budget: state.budget,
-      language: state.language,
-      currency: state.currency,
+      preferred_currency: state.currency,
     },
     { onConflict: "user_id" },
   );
@@ -107,13 +102,11 @@ async function pushPreferences() {
   await supabase.from("profiles").upsert(
     {
       id: userId,
-      full_name: state.fullName || null,
+      user_id: userId,
       home_city: state.homeCity || null,
       travel_style: state.travelStyle,
       budget_style: state.budget,
-      preferred_language: state.language,
-      preferred_currency: state.currency,
-      notifications_enabled: Object.values(state.notifications).some(Boolean),
+      preferred_currency: state.currency
     } as never,
     { onConflict: "id" },
   );
