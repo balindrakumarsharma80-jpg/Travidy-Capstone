@@ -192,16 +192,22 @@ export default {
       });
     }
 
-    const { question, trip_id, user_id } = await req.json();
+    const { question, trip_id, destination_id, user_id } = await req.json();
 
-    if (!question || !trip_id) {
-      return Response.json({ error: "Missing 'question' or 'trip_id' in request body" }, { status: 400 });
+    // A trip gives us a destination via lookup. A guest (no trip yet) can pass
+    // destination_id directly instead — this is the only thing that changed
+    // to support anonymous, local-only itinerary building on the frontend.
+    if (!question || (!trip_id && !destination_id)) {
+      return Response.json(
+        { error: "Missing 'question' and either 'trip_id' or 'destination_id' in request body" },
+        { status: 400 }
+      );
     }
 
     try {
-    return await handleChat(question, trip_id, user_id, ctx);
+      return await handleChat(question, trip_id ?? null, destination_id ?? null, user_id ?? null, ctx);
     } catch (err) {
-      console.error("chat function error:", err); // still logged server-side for you to see in the dashboard
+      console.error("chat function error:", err);
       return Response.json(
         { error: "Something went wrong generating a response. Please try again." },
         { status: 500, headers: { "Access-Control-Allow-Origin": "*" } }
@@ -210,104 +216,121 @@ export default {
   }),
 };
 
-async function handleChat(question: string, trip_id: string, user_id: string, ctx: any) {
-    // Resolve destination context from the trip — this is what makes the agent
-    // work for any city without code changes, not just Rishikesh.
+async function handleChat(
+  question: string,
+  tripId: string | null,
+  rawDestinationId: string | null,
+  userId: string | null,
+  ctx: any
+) {
+  let destinationId = rawDestinationId;
+
+  // Trip-based path (logged-in users with a real trip): resolve destination
+  // from the trip itself, as before.
+  if (tripId) {
     const { data: trip, error: tripError } = await ctx.supabaseAdmin
       .from("trips")
       .select("destination_id")
-      .eq("id", trip_id)
+      .eq("id", tripId)
       .single();
 
     if (tripError || !trip) {
       return Response.json({ error: "Trip not found" }, { status: 404 });
     }
+    destinationId = trip.destination_id;
+  }
 
-    const destinationId = trip.destination_id;
-    const { data: destination } = await ctx.supabaseAdmin
-      .from("destinations")
-      .select("name, state")
-      .eq("id", destinationId)
-      .single();
+  // Destination display name — works whether we got here via trip or guest path.
+  const { data: destination } = destinationId
+    ? await ctx.supabaseAdmin
+        .from("destinations")
+        .select("name, state")
+        .eq("id", destinationId)
+        .single()
+    : { data: null };
 
-    const destinationName = destination ? `${destination.name}, ${destination.state}` : "the traveller's destination";
+  const destinationName = destination ? `${destination.name}, ${destination.state}` : "the traveller's destination";
 
-    // Load recent conversation for context
+  // Conversation history only exists for real trips — guests are local-only
+  // by design, so there's nothing to load or persist for them.
+  const conversationContents = [];
+  if (tripId) {
     const { data: history } = await ctx.supabaseAdmin
       .from("chat_history")
       .select("role, message")
-      .eq("trip_id", trip_id)
+      .eq("trip_id", tripId)
       .order("created_at", { ascending: false })
       .limit(10);
 
-    const conversationContents = (history ?? [])
-      .reverse()
-      .map((h: any) => ({
-        role: h.role === "assistant" ? "model" : "user",
-        parts: [{ text: h.message }],
-      }));
+    conversationContents.push(
+      ...(history ?? [])
+        .reverse()
+        .map((h: any) => ({
+          role: h.role === "assistant" ? "model" : "user",
+          parts: [{ text: h.message }],
+        }))
+    );
+  }
 
-    const systemInstruction = `You are Travidy, a travel companion for a trip to ${destinationName}. Use the available tools to ground your answers: search_knowledge_base for curated destination facts, search_web for anything current or time-sensitive, search_hotels for precise price/rating filters. Do not answer from general knowledge if a tool would give a more accurate, current answer. Keep answers concise and practical.`;
+  const systemInstruction = `You are Travidy, a travel companion for a trip to ${destinationName}. Use the available tools to ground your answers: search_knowledge_base for curated destination facts, search_web for anything current or time-sensitive, search_hotels for precise price/rating filters. Do not answer from general knowledge if a tool would give a more accurate, current answer. Keep answers concise and practical.`;
 
-    let contents = [...conversationContents, { role: "user", parts: [{ text: question }] }];
+  let contents = [...conversationContents, { role: "user", parts: [{ text: question }] }];
 
-    const toolsUsed: { tool: string; args: any }[] = [];
-    const sources: { type: string; label: string }[] = [];
+  const toolsUsed: { tool: string; args: any }[] = [];
+  const sources: { type: string; label: string }[] = [];
 
-    let finalAnswer = "";
-    const MAX_TURNS = 4;
+  let finalAnswer = "";
+  const MAX_TURNS = 4;
 
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
-      const geminiResponse = await callGemini(contents, systemInstruction);
-      const candidate = geminiResponse.candidates?.[0];
-      const modelContent = candidate?.content;
-      const parts = modelContent?.parts ?? [];
-      const functionCallPart = parts.find((p: any) => p.functionCall);
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
+    const geminiResponse = await callGemini(contents, systemInstruction);
+    const candidate = geminiResponse.candidates?.[0];
+    const modelContent = candidate?.content;
+    const parts = modelContent?.parts ?? [];
+    const functionCallPart = parts.find((p: any) => p.functionCall);
 
-      if (!functionCallPart) {
-        finalAnswer = parts.map((p: any) => p.text).filter(Boolean).join("\n") || "I couldn't generate an answer — please try rephrasing.";
-        break;
-      }
-
-      const { name, args } = functionCallPart.functionCall;
-      toolsUsed.push({ tool: name, args });
-
-      const { result, sourceLabel, sourceType } = await runTool(name, args, ctx, destinationId);
-      sources.push({ type: sourceType, label: sourceLabel });
-
-      // Pass back the model's FULL content object (not a hand-built one) so any
-      // thoughtSignature Gemini attached is preserved — required for multi-turn
-      // function calling on Gemini 3 models. The function *response* itself goes
-      // back with role "user" — Gemini's current API rejects role "function".
-      contents = [
-        ...contents,
-        modelContent,
-        { role: "user", parts: [{ functionResponse: { name, response: { result } } }] },
-      ];
-
-      if (turn === MAX_TURNS - 1) {
-        finalAnswer = "I gathered some information but couldn't finish reasoning about it — please try a more specific question.";
-      }
+    if (!functionCallPart) {
+      finalAnswer = parts.map((p: any) => p.text).filter(Boolean).join("\n") || "I couldn't generate an answer — please try rephrasing.";
+      break;
     }
 
-    // Persist conversation
+    const { name, args } = functionCallPart.functionCall;
+    toolsUsed.push({ tool: name, args });
+
+    const { result, sourceLabel, sourceType } = await runTool(name, args, ctx, destinationId);
+    sources.push({ type: sourceType, label: sourceLabel });
+
+    contents = [
+      ...contents,
+      modelContent,
+      { role: "user", parts: [{ functionResponse: { name, response: { result } } }] },
+    ];
+
+    if (turn === MAX_TURNS - 1) {
+      finalAnswer = "I gathered some information but couldn't finish reasoning about it — please try a more specific question.";
+    }
+  }
+
+  // Persist only when a real trip exists — guests are local-only by design,
+  // matching the frontend's guest itinerary approach exactly.
+  if (tripId) {
     await ctx.supabaseAdmin.from("chat_history").insert([
-      { user_id, trip_id, role: "user", message: question },
-      { user_id, trip_id, role: "assistant", message: finalAnswer, sources },
+      { user_id: userId, trip_id: tripId, role: "user", message: question },
+      { user_id: userId, trip_id: tripId, role: "assistant", message: finalAnswer, sources },
     ]);
 
-    // Audit log
     await ctx.supabaseAdmin.from("agent_runs").insert({
-      user_id,
-      trip_id,
+      user_id: userId,
+      trip_id: tripId,
       agent_type: "chat",
       input: question,
       output: finalAnswer,
       tools_used: toolsUsed,
     });
+  }
 
-    return Response.json(
-      { answer: finalAnswer, sources },
-      { headers: { "Access-Control-Allow-Origin": "*" } }
-    );
+  return Response.json(
+    { answer: finalAnswer, sources },
+    { headers: { "Access-Control-Allow-Origin": "*" } }
+  );
 }

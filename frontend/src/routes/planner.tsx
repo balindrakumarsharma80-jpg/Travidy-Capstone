@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { askTravidy } from "@/lib/rag.functions";
+import { askTravidyAgent } from "@/lib/travidy";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -297,13 +297,12 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>([]);
       let reply = "";
       let suggestions: Suggestion[] = [];
       try {
-        const res = await askTravidy({
-          data: { question: value, destination: destName || null },
-        });
-        reply = res.answer ?? "";
-        suggestions = (res.suggestions ?? []) as Suggestion[];
-      } catch {
-        reply = "";
+        const res = await askTravidyAgent({
+          tripId: tripId ?? null,
+          destinationName: destName || null,
+          question: value,
+          });
+          reply = res.answer ?? "";        reply = "";
       }
       // Fall back to the curated picks only when the model returned nothing usable.
       if (!suggestions.length && !reply) {
