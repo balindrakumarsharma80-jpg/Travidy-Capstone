@@ -469,13 +469,10 @@ const tripBudget =
   checklist.map((c) => c.label),
 );
 
-  const invalidate = (key: string) => qc.invalidateQueries({ queryKey: [key, tripId] });
+  const invalidate = (key: string) => queryClient.invalidateQueries({ queryKey: [key, tripId] });
 
   const toggleCheck = useMutation({
     mutationFn: async (item: ChecklistItem) => {
-      if (isGuest) {
-  return;
-}
       const { error } = await supabase
         .from("checklist_items")
         .update({ done: !item.done } as never)
@@ -488,14 +485,13 @@ const tripBudget =
 
   const addTask = useMutation({
     mutationFn: async (label: string) => {
-      if (isGuest || !tripId) return;
+      if (!tripId) throw new Error("Trip ID is missing");
       const { error } = await supabase.from("checklist_items").insert({
-        trip_id: tripId,
-        label,
-        done: false,
-        position: checklist.length + 1,
-        order_index: checklist.length + 1,
-      } as never);
+  trip_id: tripId,
+  label,
+  done: false,
+ position: checklist.length + 1,
+} as never);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -504,12 +500,15 @@ const tripBudget =
       setAddOpen(false);
       toast.success("Task added to your checklist");
     },
-    onError: () => toast.error("Couldn't add that task."),
+    onError: (error) => {
+  console.error("ADD CHECKLIST ERROR:", error);
+  toast.error("Couldn't add that task.");
+},
   });
 
   const removeTask = useMutation({
     mutationFn: async (id: string) => {
-      if (isGuest || !tripId) return;
+      if (!tripId) throw new Error("Trip ID is missing");
       const { error } = await supabase.from("checklist_items").delete().eq("id", id);
       if (error) throw error;
     },
@@ -1162,11 +1161,23 @@ const shareLink = async (url: string, label: string) => {
           <div className="flex items-center justify-between">
             <h2 className="text-base">Share & collaborators</h2>
             <button
-              onClick={() => setShareOpen(true)}
-              className="text-xs font-semibold text-primary"
-            >
-              Manage
-            </button>
+  onClick={() => {
+    if (!isAuthenticated) {
+      navigate({
+        to: "/auth",
+        search: {
+          share: "true",
+        },
+      });
+      return;
+    }
+
+    setShareOpen(true);
+  }}
+  className="text-xs font-semibold text-primary"
+>
+  Manage
+</button>
           </div>
           <p className="text-xs text-muted-foreground">
             {collaborators.length === 0

@@ -271,14 +271,14 @@ export const checklistQuery = (tripId: string | undefined) =>
           .from("checklist_items")
           .select("*")
           .eq("trip_id", tripId)
-          .order("order_index", { ascending: true })
+          .order("position", { ascending: true })
       );
 
       return (rows as any[]).map((r) => ({
         id: r.id,
         label: r.label,
         done: r.done ?? false,
-        position: r.order_index ?? 0,
+        position: r.position ?? 0,
       })) as ChecklistItem[];
     },
   });
@@ -289,10 +289,16 @@ export async function toggleChecklistItem(id: string, done: boolean) {
 }
 
 export async function addChecklistItem(tripId: string, label: string, position: number) {
-  const { error } = await supabase
-    .from("checklist_items")
-    .insert({ trip_id: tripId, label, order_index: position, done: false });
-  if (error) throw error;
+  return unwrap(
+    supabase
+      .from("checklist_items")
+      .insert({
+        trip_id: tripId,
+        label,
+        position,
+        done: false,
+      } as never)
+  );
 }
 
 // ---------------------------------------------------------------------------
