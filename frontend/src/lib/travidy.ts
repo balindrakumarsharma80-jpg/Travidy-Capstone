@@ -344,6 +344,56 @@ export async function sendChatMessage(
   if (error) throw error;
   return data as { answer: string; sources: { type: string; label: string }[] };
 }
+// ---------------------------------------------------------------------------
+// Guest-aware chat — works with a real trip_id OR just a destination name.
+// Looks up the real database destination_id when no trip exists yet, since
+// the frontend's destination catalog only has string keys (e.g. "rishikesh"),
+// not the actual UUID the chat Edge Function needs.
+// ---------------------------------------------------------------------------
+
+export async function getDestinationIdByName(name: string): Promise<string | null> {
+  if (!name) return null;
+  const { data, error } = await supabase
+    .from("destinations")
+    .select("id")
+    .ilike("name", name)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data.id as string;
+}
+
+export async function askTravidyAgent(params: {
+  tripId?: string | null;
+  destinationName?: string | null;
+  question: string;
+}): Promise<{ answer: string; sources: { type: string; label: string }[] }> {
+  const { data: userData } = await supabase.auth.getUser();
+
+  const body: Record<string, unknown> = {
+    question: params.question,
+    user_id: userData?.user?.id ?? null,
+  };
+
+  if (params.tripId) {
+    body.trip_id = params.tripId;
+  } else if (params.destinationName) {
+    const destinationId = await getDestinationIdByName(params.destinationName);
+    if (!destinationId) {
+      return {
+        answer:
+          "I don't have destination data set up for this city yet — try Rishikesh for now, or ask something general.",
+        sources: [],
+      };
+    }
+    body.destination_id = destinationId;
+  } else {
+    throw new Error("askTravidyAgent requires either tripId or destinationName");
+  }
+
+  const { data, error } = await supabase.functions.invoke("chat", { body });
+  if (error) throw error;
+  return data as { answer: string; sources: { type: string; label: string }[] };
+}
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
