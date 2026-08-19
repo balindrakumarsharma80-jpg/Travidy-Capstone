@@ -11,6 +11,7 @@ import cafe from "@/assets/cafe.jpg";
 import ramjhula from "@/assets/ramjhula.jpg";
 import manali from "@/assets/manali.jpg";
 import kerala from "@/assets/kerala.jpg";
+import ranchi from "@/assets/ranchi.jpg";
 
 export const images: Record<string, string> = {
   rishikesh,
@@ -23,6 +24,7 @@ export const images: Record<string, string> = {
   ramjhula,
   manali,
   kerala,
+  ranchi,
 };
 
 export function img(key: string | null | undefined) {
@@ -400,7 +402,108 @@ export async function askTravidyAgent(params: {
   if (error) throw error;
   return data as { answer: string; sources: { type: string; label: string }[] };
 }
+// ---------------------------------------------------------------------------
+// Live suggestion cards — pulled from the real database instead of a tiny
+// hardcoded list, so every ingested city works automatically with no extra
+// per-city code. Prefers structured tables (hotels/activities, which have
+// real pricing) and falls back to pois for everything else.
+// ---------------------------------------------------------------------------
 
+export type PoiSuggestion = {
+  name: string;
+  category: string;
+  subtitle: string;
+  price_label: string;
+  duration: string;
+  rating: number;
+  reviews: number;
+};
+
+const HOTEL_CATEGORIES = ["hotel", "hostel", "resort"];
+const RESTAURANT_CATEGORIES = ["restaurant", "food_cafe"];
+const ACTIVITY_CATEGORIES = ["adventure", "water_body", "road_trip", "activity"];
+const ATTRACTION_CATEGORIES = [
+  "temple", "spiritual", "hidden_gem", "nature", "hill_viewpoint",
+  "culture_heritage", "shopping", "waterfall", "attraction", "area", "wellness_retreat",
+];
+
+export async function fetchSuggestions(
+  destinationId: string | null,
+  intent: "hotel" | "restaurant" | "activity" | "attraction"
+): Promise<PoiSuggestion[]> {
+  if (!destinationId) return [];
+
+  const results: PoiSuggestion[] = [];
+
+  if (intent === "hotel") {
+    const { data } = await supabase
+      .from("hotels")
+      .select("name, location_zone, price_min, price_max, star_rating")
+      .eq("destination_id", destinationId)
+      .limit(4);
+    (data ?? []).forEach((h: any) => {
+      results.push({
+        name: h.name,
+        category: "hotel",
+        subtitle: h.location_zone ?? "",
+        price_label: h.price_min ? `₹${h.price_min} - ₹${h.price_max}` : "Price varies",
+        duration: "",
+        rating: Number(h.star_rating ?? 4.3),
+        reviews: 0,
+      });
+    });
+  }
+
+  if (intent === "activity") {
+    const { data } = await supabase
+      .from("activities")
+      .select("name, price_min, price_max, rules")
+      .eq("destination_id", destinationId)
+      .limit(4);
+    (data ?? []).forEach((a: any) => {
+      results.push({
+        name: a.name,
+        category: "activity",
+        subtitle: a.rules ?? "",
+        price_label: a.price_min ? `₹${a.price_min} - ₹${a.price_max}` : "Price varies",
+        duration: "",
+        rating: 4.4,
+        reviews: 0,
+      });
+    });
+  }
+
+  const categoryMap = {
+    hotel: HOTEL_CATEGORIES,
+    restaurant: RESTAURANT_CATEGORIES,
+    activity: ACTIVITY_CATEGORIES,
+    attraction: ATTRACTION_CATEGORIES,
+  };
+
+  if (results.length < 4) {
+    const { data } = await supabase
+      .from("pois")
+      .select("name, category, description")
+      .eq("destination_id", destinationId)
+      .in("category", categoryMap[intent])
+      .limit(6 - results.length);
+
+    (data ?? []).forEach((p: any) => {
+      if (results.some((r) => r.name === p.name)) return;
+      results.push({
+        name: p.name,
+        category: intent,
+        subtitle: (p.description ?? "").slice(0, 60),
+        price_label: "Price varies",
+        duration: "",
+        rating: 4.3,
+        reviews: 0,
+      });
+    });
+  }
+
+  return results.slice(0, 6);
+}
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------

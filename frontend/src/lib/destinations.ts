@@ -121,6 +121,25 @@ export const destinations: Destination[] = [
     food: ["Villa Maya", "Rapsy Restaurant"],
     imageKey: "kerala",
   },
+  {
+    id: "ranchi",
+    name: "Ranchi",
+    tag: "New",
+    categories: ["Nature", "Waterfalls", "Culture"],
+    price: "₹4,000/person",
+    rating: "4.5",
+    bestTime: "Oct – Mar",
+    tagline: "Capital of Jharkhand — waterfalls, hills, and tribal heritage.",
+    dailyBudget: "₹2,000 – ₹4,000 / day",
+    highlights: [
+      "Hundru Falls",
+      "Jonha Falls",
+      "Rock Garden & Kanke Dam",
+      "Tagore Hill",
+    ],
+    food: ["Local Jharkhandi Thali", "Ranchi Street Food"],
+    imageKey: "ranchi",
+  },
 ];
 
 export const howItWorks = [

@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { askTravidyAgent } from "@/lib/travidy";
+import { askTravidyAgent, fetchSuggestions, img, inr, itineraryQuery, tripQuery } from "@/lib/travidy";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -38,10 +38,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
-import { img, inr, itineraryQuery, tripQuery } from "@/lib/travidy";
 import { useAuth } from "@/hooks/use-auth";
 const DESTINATION_DB_IDS: Record<string, string> = {
    rishikesh: "2f634884-ba98-4c6b-9b1f-0a485172c9c3",
+   ranchi: "5c56e61b-b5bf-4da1-bafd-4319d9ae17bb",
+   goa: "b2ff347f-55e2-435a-811c-d1f34d04fcd0",
+   jaipur: "d72ccdd7-502f-4257-84c7-7814c2c8ffd3",
+   manali: "af257d3a-f493-4450-9351-aacede4ee2dd",
+   kerala: "b95354bb-6fc8-491e-a7b9-30a40716a8a9",
 };
 import {
   destinations as destinationCatalog,
@@ -258,10 +262,7 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>(() => {
         return tripId;
       }
 
-      const destinationDbId =
-  destination?.id === "rishikesh"
-    ? DESTINATION_DB_IDS.rishikesh
-    : null;
+     const destinationDbId = destination?.id ? DESTINATION_DB_IDS[destination.id] ?? null : null;
 
 
 if (!destinationDbId) {
@@ -357,10 +358,7 @@ if (!destinationDbId) {
     return null;
   }
 
-  const destinationDbId =
-    destination?.id === "rishikesh"
-      ? DESTINATION_DB_IDS.rishikesh
-      : null;
+  const destinationDbId = destination?.id ? DESTINATION_DB_IDS[destination.id] ?? null : null;
 
   if (!destinationDbId) {
     toast.error(`No database destination found for "${destName}".`);
@@ -515,6 +513,16 @@ const added = new Set(
 
 const preview = allItinerary.slice(0, 3);
 
+  /** Detects what kind of picks the traveller actually wants. */
+  function detectIntent(prompt: string): "hotel" | "restaurant" | "activity" | "attraction" | null {
+    const p = prompt.toLowerCase();
+    if (/hotel|stay|hostel|resort|accommodation|room/.test(p)) return "hotel";
+    if (/food|eat|restaurant|cafe|café|dinner|lunch|breakfast/.test(p)) return "restaurant";
+    if (/adventure|sport|rafting|trek|bungee|zip|climb|kayak|paraglid|surf|dive/.test(p)) return "activity";
+    if (/temple|museum|fort|palace|sightsee|attraction|heritage|spiritual/.test(p)) return "attraction";
+    return null;
+  }
+
   const submit = (text: string) => {
     const value = text.trim();
     if (!value || thinking) return;
@@ -532,45 +540,27 @@ const preview = allItinerary.slice(0, 3);
         reply = res.answer ?? "";
       } catch (err) {
         console.error("Chat agent error:", err);
-        reply = "";
+        reply = "Our travel assistant is a bit busy right now — please try asking again in a moment.";
       }
 
-      // Suggestion cards always come from our local curated picks that match
-      // the request — the real agent returns grounded answer text, not
-      // structured cards, so the "Add to itinerary" UI stays powered by
-      // local data regardless of how the answer itself was generated.
-      const suggestions: Suggestion[] = matchLocalRecs(value).map((r) => ({
-        name: r.name,
-        category: r.category,
-        subtitle: r.subtitle ?? "",
-        price_label: r.price_label ?? "Price varies",
-        duration: r.duration ?? "",
-        rating: Number(r.rating ?? 4.5),
-        reviews: Number(r.reviews ?? 0),
-      }));
+      // Suggestion cards are pulled live from the real database (hotels,
+      // activities, pois) for whichever destination the traveller picked —
+      // works for every ingested city automatically, no per-city hardcoding.
+      const intent = detectIntent(value);
+      const destinationDbId = destination?.id ? DESTINATION_DB_IDS[destination.id] ?? null : null;
+      const suggestions: Suggestion[] = intent
+        ? await fetchSuggestions(destinationDbId, intent)
+        : [];
 
       setMessages((m) => [
         ...m,
-        { id: uid(), role: "ai", text: reply || aiReply(value), suggestions },
+        { id: uid(), role: "ai", text: reply, suggestions },
       ]);
       setThinking(false);
       setShowRecs(true);
       inputRef.current?.focus();
     })();
   };
-
-  /** Curated picks that actually match the request — never a generic dump. */
-  function matchLocalRecs(prompt: string): DestRec[] {
-    const p = prompt.toLowerCase();
-    const wants = (cat: string) => recs.filter((r) => r.category === cat);
-    if (/hotel|stay|hostel|resort|accommodation|room/.test(p)) return wants("hotel");
-    if (/food|eat|restaurant|cafe|café|dinner|lunch|breakfast/.test(p)) return wants("restaurant");
-    if (/adventure|sport|rafting|trek|bungee|zip|climb|kayak|paraglid|surf|dive/.test(p))
-      return wants("activity");
-    if (/temple|museum|fort|palace|sightsee|attraction|heritage|spiritual/.test(p))
-      return wants("attraction");
-    return [];
-  }
 
   const startVoice = () => {
     const SR =

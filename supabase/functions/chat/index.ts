@@ -7,8 +7,7 @@ const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY"); // optional — search_we
 const GEMINI_EMBED_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent";
 const GEMINI_GENERATE_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
-
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 // ---------------------------------------------------------------------------
 // Tool definitions (Gemini function-calling schema)
 // ---------------------------------------------------------------------------
@@ -70,23 +69,34 @@ async function embedText(text: string): Promise<number[]> {
   return data.embedding.values;
 }
 
-async function callGemini(contents: any[], systemInstruction: string) {
-  const response = await fetch(`${GEMINI_GENERATE_URL}?key=${GEMINI_API_KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      contents,
-      tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
-    }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
+async function callGemini(contents: any[], systemInstruction: string, retries = 3) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const response = await fetch(`${GEMINI_GENERATE_URL}?key=${GEMINI_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemInstruction }] },
+        contents,
+        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+      }),
+    });
+    const data = await response.json();
+
+    if (response.ok) return data;
+
+    // 503 (overloaded) and 429 (rate limited) are transient — worth retrying
+    // with backoff. Anything else (bad request, auth failure) fails fast.
+    const isRetryable = response.status === 503 || response.status === 429;
+    if (isRetryable && attempt < retries) {
+      const waitMs = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      continue;
+    }
+
     throw new Error(`Gemini error: ${JSON.stringify(data)}`);
   }
-  return data;
+  throw new Error("Gemini error: exhausted retries");
 }
-
 // ---------------------------------------------------------------------------
 // Tool execution
 // ---------------------------------------------------------------------------
