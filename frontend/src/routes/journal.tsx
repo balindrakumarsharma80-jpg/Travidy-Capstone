@@ -30,7 +30,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { supabase } from "@/integrations/supabase/client";
-import { startRecording, transcribe, type Recording } from "@/lib/audio-recorder";
 import {
   journalQuery,
   mediaKind,
@@ -47,7 +46,7 @@ export const Route = createFileRoute("/journal")({
       {
         name: "description",
         content:
-          "A private travel journal: capture photos, videos and voice notes from your trip. Only you can see it.",
+          "A private travel journal: capture photos, videos from your trip. Only you can see it.",
       },
       { property: "og:title", content: "Personal Journal — Travidy" },
       {
@@ -72,9 +71,7 @@ function Journal() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(emptyDraft);
   const [files, setFiles] = useState<File[]>([]);
-  const [recorder, setRecorder] = useState<Recording | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [voiceNote, setVoiceNote] = useState<Blob | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState<{ id: string; title: string; body: string } | null>(null);
 
@@ -87,8 +84,6 @@ function Journal() {
       const tripId = draft.tripId || null;
       const paths: string[] = [];
       for (const f of files) paths.push(await uploadJournalMedia(user.id, tripId, f, f.name));
-      if (voiceNote)
-        paths.push(await uploadJournalMedia(user.id, tripId, voiceNote, "voice-note.wav"));
 
       const { error } = await supabase.from("trip_posts").insert({
         user_id: user.id,
@@ -105,7 +100,6 @@ function Journal() {
       setOpen(false);
       setDraft(emptyDraft);
       setFiles([]);
-      setVoiceNote(null);
       toast.success("Saved to your private journal");
     },
     onError: () => toast.error("Couldn't save that entry. Please try again."),
@@ -131,7 +125,7 @@ function Journal() {
     mutationFn: async (id: string) => {
       const { error } = await supabase
         .from("trip_posts")
-        .update({ status: "deleted" })
+        .update({ status: "removed" })
         .eq("id", id);
       if (error) throw error;
     },
@@ -141,30 +135,6 @@ function Journal() {
     },
     onError: () => toast.error("Couldn't remove that entry."),
   });
-
-  const toggleRecording = async () => {
-    if (recorder) {
-      setBusy("Transcribing your note…");
-      try {
-        const blob = await recorder.stop();
-        setRecorder(null);
-        setVoiceNote(blob);
-        const text = await transcribe(blob);
-        if (text) setDraft((d) => ({ ...d, body: [d.body, text].filter(Boolean).join("\n\n") }));
-        toast.success("Voice note transcribed");
-      } catch {
-        toast.error("Couldn't transcribe that recording.");
-      } finally {
-        setBusy(null);
-      }
-      return;
-    }
-    try {
-      setRecorder(await startRecording());
-    } catch {
-      toast.error("Microphone permission is needed to record.");
-    }
-  };
 
   return (
     <PhoneShell>
@@ -208,7 +178,7 @@ function Journal() {
           <Card className="text-center">
             <h2 className="text-sm font-semibold">Nothing captured yet</h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Add a photo, a video or a quick voice note from your trip.
+              Add a photo, a video from your trip.
             </p>
           </Card>
         )}
@@ -278,16 +248,6 @@ function Journal() {
               >
                 <ImagePlus className="size-4 text-primary" /> Photo / video
               </button>
-              <button
-                type="button"
-                onClick={toggleRecording}
-                className={`flex items-center gap-1 rounded-xl px-3 py-2 font-semibold ${
-                  recorder ? "bg-destructive text-white" : "border border-border"
-                }`}
-              >
-                {recorder ? <Square className="size-4" /> : <Mic className="size-4 text-primary" />}
-                {recorder ? "Stop & transcribe" : "Voice note"}
-              </button>
               <input
                 ref={fileInput}
                 type="file"
@@ -297,16 +257,10 @@ function Journal() {
                 onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
               />
             </div>
-            {busy && (
-              <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> {busy}
-              </p>
-            )}
-            {(files.length > 0 || voiceNote) && (
+            {files.length > 0 && (
               <p className="text-xs text-muted-foreground">
                 {files.length > 0 && `${files.length} file(s) attached`}
-                {files.length > 0 && voiceNote && " • "}
-                {voiceNote && "voice note attached"}
+                {files.length > 0 && " • "}
               </p>
             )}
           </div>
