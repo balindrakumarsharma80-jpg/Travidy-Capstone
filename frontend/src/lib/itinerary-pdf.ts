@@ -1,8 +1,12 @@
 import type { ChecklistItem, ItineraryItem, Trip } from "@/lib/travidy";
 import { dateRange, dayLabel, inr } from "@/lib/travidy";
 
-const esc = (s: string) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const esc = (s: unknown) =>
+  String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
 /**
  * Builds a print-ready document of the itinerary and opens the browser's
@@ -62,11 +66,20 @@ export function exportItineraryPdf(trip: Trip, items: ItineraryItem[], checklist
       ${tasks}
     </body></html>`;
 
-  const w = window.open("", "_blank", "noopener,width=900,height=1000");
-  if (!w) return false;
-  w.document.write(html);
-  w.document.close();
+  const w = window.open("", "_blank", "width=900,height=1000");
+
+if (!w) {
+  return false;
+}
+
+w.document.open();
+w.document.write(html);
+w.document.close();
+
+w.onload = () => {
   w.focus();
   setTimeout(() => w.print(), 400);
-  return true;
+};
+
+return true;
 }
