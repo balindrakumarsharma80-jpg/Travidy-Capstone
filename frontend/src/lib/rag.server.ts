@@ -237,7 +237,7 @@ export async function answerTravelQuestion(question: string, destination: string
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
-      model: "google/gemini-2.5-flash",
+      model: "google/gemini-flash-latest",
       response_format: { type: "json_object" },
       messages: [
         {

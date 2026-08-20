@@ -162,6 +162,7 @@ const { data: trip = null } = useQuery({
   enabled: !!tripId,
 });
 
+
 const { data: itinerary = [] } = useQuery(
   itineraryQuery(tripId)
 );
@@ -294,6 +295,12 @@ if (!destinationDbId) {
     },
 
     onSuccess: (savedTripId) => {
+      console.log("🔥 SAVE TRIP SUCCESS — ID:", savedTripId);
+      localStorage.setItem("travidy_trip_id", String(savedTripId));
+       console.log(
+    "🔥 STORED BEFORE NAVIGATION:",
+    localStorage.getItem("travidy_trip_id")
+  );
       qc.invalidateQueries({ queryKey: ["trip", savedTripId] });
       qc.invalidateQueries({ queryKey: ["my-trips"] });
       qc.invalidateQueries({ queryKey: ["itinerary", savedTripId] });
@@ -422,86 +429,160 @@ if (!destinationDbId) {
   };
 };
 
- const add = useMutation({
+const add = useMutation({
   mutationFn: async (rec: Suggestion) => {
     let currentTripId = tripId;
 
-    // Guest user: keep the recommendation locally.
-    if (!isAuthenticated || !currentTripId) {
+    // ------------------------------------------------------------
+    // GUEST USER
+    // Keep recommendations locally until they create/save a trip.
+    // ------------------------------------------------------------
+    if (!isAuthenticated) {
       setGuestItinerary((items) => {
-        // Prevent duplicate additions
         if (items.some((item) => item.name === rec.name)) {
           return items;
         }
 
-       const updated = [
-  ...items,
-  {
-    ...rec,
-    id: crypto.randomUUID(),
-    day_number: addDay,
-    status: "planned",
-  },
-];
-  localStorage.setItem("travidy_guest_itinerary", JSON.stringify(updated));
-  localStorage.setItem(
-  "travidy_guest_budget",
-  String(details.budget)
-);
-   return updated;
+        const updated = [
+          ...items,
+          {
+            ...rec,
+            id: crypto.randomUUID(),
+            day_number: addDay,
+            status: "planned",
+          },
+        ];
+
+        localStorage.setItem(
+          "travidy_guest_itinerary",
+          JSON.stringify(updated)
+        );
+
+        localStorage.setItem(
+          "travidy_guest_budget",
+          String(details.budget)
+        );
+
+        return updated;
       });
 
       return { tripId: null };
     }
 
-    // Existing saved trip requires authentication.
-    if (!isAuthenticated) {
-      toast.error("Please sign in to add activities to this trip.");
-      return { tripId: null };
+    // ------------------------------------------------------------
+    // LOGGED-IN USER WITH NO EXISTING TRIP
+    // Create the trip automatically when they add their first item.
+    // ------------------------------------------------------------
+    if (!currentTripId) {
+      if (!details.start_date || !details.end_date) {
+        throw new Error("Please select your trip dates first.");
+      }
+
+      const destinationDbId = destination?.id
+        ? DESTINATION_DB_IDS[destination.id] ?? null
+        : null;
+
+      if (!destinationDbId) {
+        throw new Error(
+          `No database destination found for "${destName}".`
+        );
+      }
+
+      const { data: newTrip, error: tripError } = await supabase
+        .from("trips")
+        .insert({
+          user_id: user?.id ?? null,
+          destination_id: destinationDbId,
+          title: details.title || `${destName} Trip`,
+          start_date: details.start_date,
+          end_date: details.end_date,
+          travellers: Math.max(1, Number(details.travelers) || 1),
+          budget_amount: Math.max(0, Number(details.budget) || 0),
+          spent_amount: 0,
+          status: "draft",
+          share_token: crypto.randomUUID(),
+        } as never)
+        .select("id")
+        .single();
+
+      if (tripError) {
+        console.error("CREATE TRIP FOR ADD ERROR:", tripError);
+        throw tripError;
+      }
+
+      currentTripId = newTrip.id as string;
+
+      // Keep the trip available for the rest of the app.
+      localStorage.setItem("travidy_trip_id", currentTripId);
     }
 
-    // Logged-in user with an existing trip
-    const { error } = await supabase.from("itinerary_items").insert({
-trip_id: currentTripId,
-  day_number: addDay,
-  place_name: rec.name,
-  notes: rec.subtitle ?? null,
-  category: rec.category ?? "activity",
-  price_label: rec.price_label ?? null,
-  item_status: "planned",
-  source: "agent",
-  order_index: 99,
-});
+    // ------------------------------------------------------------
+    // LOGGED-IN USER WITH A TRIP
+    // Add the recommendation to the database.
+    // ------------------------------------------------------------
+    const { error } = await supabase
+      .from("itinerary_items")
+      .insert({
+        trip_id: currentTripId,
+        day_number: addDay,
+        place_name: rec.name,
+        notes: rec.subtitle ?? null,
+        category: rec.category ?? "activity",
+        price_label: rec.price_label ?? null,
+        item_status: "planned",
+        source: "agent",
+        order_index: 99,
+      });
 
     if (error) throw error;
 
     return { tripId: currentTripId };
   },
 
- onSuccess: async ({ tripId: createdTripId }, rec) => {
-  if (!createdTripId) {
-    return;
-  }
+  onSuccess: async ({ tripId: createdTripId, createdTrip }, rec) => {
+    if (!createdTripId) {
+      return;
+    }
 
     await qc.invalidateQueries({
-    queryKey: ["itinerary", createdTripId],
+      queryKey: ["itinerary", createdTripId],
+    });
+
+    await qc.invalidateQueries({
+      queryKey: ["trip", createdTripId],
+    });
+
+    await qc.invalidateQueries({
+      queryKey: ["my-trips"],
+    });
+
+     await qc.invalidateQueries({
+    queryKey: ["my-trips"],
   });
 
-  await qc.invalidateQueries({
-    queryKey: ["trip", createdTripId],
-  });
+    toast.success(`${rec.name} added to your trip.`);
 
-  toast.success(`${rec.name} added to your trip.`);
-},
+    // If this was the first item and we just created the trip,
+    // put the trip ID into the URL so Planner/Itinerary now know it.
+    if (createdTrip) {
+      void navigate({
+        to: "/planner",
+        search: {
+          dest: dest ?? "",
+          trip: createdTripId,
+        },
+      });
+    }
+  },
 
   onError: (error) => {
-   console.error("ADD TO TRIP ERROR:", error);
-     toast.error(
-    (error as any)?.message ?? "Couldn't add that to your trip."
-  );
+    console.error("ADD TO TRIP ERROR:", error);
+
+    toast.error(
+      (error as any)?.message ?? "Couldn't add that to your trip."
+    );
   },
 });
-
  const allItinerary = !isAuthenticated || !tripId ? guestItinerary : itinerary;
 
 const added = new Set(
@@ -979,12 +1060,25 @@ const preview = allItinerary.slice(0, 3);
     View Full Itinerary <ArrowRight className="size-3.5" />
   </Link>
 ) : (
-  <Link
-    to="/itinerary"
+  <button
+    type="button"
+    onClick={() => {
+      if (!isAuthenticated) {
+        navigate({
+          to: "/auth",
+          search: {
+            share: "true",
+          },
+        });
+        return;
+      }
+
+      toast.error("Your trip could not be found. Please open your saved trip first.");
+    }}
     className="flex items-center gap-1 text-xs font-semibold text-primary"
   >
     View Full Itinerary <ArrowRight className="size-3.5" />
-  </Link>
+  </button>
 )}
           </div>
           {preview.length === 0 ? (
@@ -1033,7 +1127,10 @@ const preview = allItinerary.slice(0, 3);
       await navigator.clipboard.writeText(shareUrl);
 
       toast.success("Invite link copied to your clipboard");
-      return;
+      return {
+  tripId: currentTripId,
+  createdTrip: false,
+};
     }
 
     const shareUrl =

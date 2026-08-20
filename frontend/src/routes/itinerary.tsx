@@ -119,7 +119,22 @@ function Itinerary() {
   const { trip: tripParam, share } = Route.useSearch();
   
 
-const tripId = tripParam ?? undefined;
+const storedTripId =
+  typeof window !== "undefined"
+    ? localStorage.getItem("travidy_trip_id")
+    : null;
+
+const tripId = tripParam ?? storedTripId ?? undefined;
+
+console.log("ITINERARY TRIP DEBUG:", {
+  tripParam,
+  storedTripId,
+  tripId,
+  localStorageTripId:
+    typeof window !== "undefined"
+      ? localStorage.getItem("travidy_trip_id")
+      : null,
+});
   
 const { user, isAuthenticated, loading: authLoading } = useAuth();
   const isGuest = !isAuthenticated || !tripId;
@@ -490,7 +505,7 @@ const tripBudget =
   trip_id: tripId,
   label,
   done: false,
- position: checklist.length + 1,
+ order_index: checklist.length + 1,
 } as never);
       if (error) throw error;
     },
