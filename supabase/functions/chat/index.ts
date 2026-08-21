@@ -7,7 +7,7 @@ const TAVILY_API_KEY = Deno.env.get("TAVILY_API_KEY"); // optional — search_we
 const GEMINI_EMBED_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent";
 const GEMINI_GENERATE_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent";
 // ---------------------------------------------------------------------------
 // Tool definitions (Gemini function-calling schema)
 // ---------------------------------------------------------------------------
