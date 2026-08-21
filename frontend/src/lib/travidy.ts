@@ -423,24 +423,43 @@ const HOTEL_CATEGORIES = ["hotel", "hostel", "resort"];
 const RESTAURANT_CATEGORIES = ["restaurant", "food_cafe"];
 const ACTIVITY_CATEGORIES = ["adventure", "water_body", "road_trip", "activity"];
 const ATTRACTION_CATEGORIES = [
-  "temple", "spiritual", "hidden_gem", "nature", "hill_viewpoint",
-  "culture_heritage", "shopping", "waterfall", "attraction", "area", "wellness_retreat",
+    "temple",
+  "spiritual",
+  "hidden_gem",
+  "nature",
+  "mountain",
+  "mountains",
+  "beach",
+  "beaches",
+  "hill_viewpoint",
+  "culture_heritage",
+  "shopping",
+  "waterfall",
+  "attraction",
+  "area",
+  "wellness_retreat",
 ];
 
 export async function fetchSuggestions(
   destinationId: string | null,
-  intent: "hotel" | "restaurant" | "activity" | "attraction"
+  intent: "hotel" | "restaurant" | "activity" | "attraction",
+  poiCategories?: string[]
 ): Promise<PoiSuggestion[]> {
   if (!destinationId) return [];
 
   const results: PoiSuggestion[] = [];
 
   if (intent === "hotel") {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("hotels")
       .select("name, location_zone, price_min, price_max, star_rating")
       .eq("destination_id", destinationId)
       .limit(4);
+
+      if (error) {
+    console.error("HOTEL FETCH ERROR:", error);
+    throw error;
+  }
     (data ?? []).forEach((h: any) => {
       results.push({
         name: h.name,
@@ -485,7 +504,7 @@ export async function fetchSuggestions(
       .from("pois")
       .select("name, category, description")
       .eq("destination_id", destinationId)
-      .in("category", categoryMap[intent])
+      .in("category", poiCategories ?? categoryMap[intent])
       .limit(6 - results.length);
 
     (data ?? []).forEach((p: any) => {

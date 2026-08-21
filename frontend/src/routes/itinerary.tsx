@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bell,
@@ -57,6 +57,7 @@ import {
   type ChecklistItem,
   type ItineraryItem,
 } from "@/lib/travidy";
+import { uploadJournalMedia } from "@/lib/journal";
 import { destinations } from "@/lib/destinations";
 import { suggestChecklist } from "@/lib/checklist-suggestions";
 import { exportItineraryPdf } from "@/lib/itinerary-pdf";
@@ -458,6 +459,12 @@ const tripBudget =
   const [expanded, setExpanded] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [journalOpen, setJournalOpen] = useState(false);
+  const [journalTitle, setJournalTitle] = useState("");
+const [journalBody, setJournalBody] = useState("");
+const [journalFiles, setJournalFiles] = useState<File[]>([]);
+const journalFileInput = useRef<HTMLInputElement>(null);
+const [journalSaving, setJournalSaving] = useState(false);
   const [newTask, setNewTask] = useState("");
   const [showBudgetDetail, setShowBudgetDetail] = useState(false);
   const [details, setDetails] = useState({
@@ -472,9 +479,72 @@ const tripBudget =
   end_date: currentTrip.end_date ?? "",
 });
 
+const saveJournalEntry = async () => {
+  if (!user) {
+    toast.error("Please sign in to save a journal entry.");
+    return;
+  }
+
+  if (!tripId) {
+    toast.error("No trip is selected.");
+    return;
+  }
+
+  if (
+    !journalTitle.trim() &&
+    !journalBody.trim() &&
+    journalFiles.length === 0
+  ) {
+    toast.error("Add some text, a photo, or a video first.");
+    return;
+  }
+
+  try {
+    setJournalSaving(true);
+
+    const paths: string[] = [];
+
+    for (const file of journalFiles) {
+      paths.push(
+        await uploadJournalMedia(
+          user.id,
+          tripId,
+          file,
+          file.name
+        )
+      );
+    }
+
+    const { error } = await supabase
+      .from("trip_posts")
+      .insert({
+        user_id: user.id,
+        trip_id: tripId,
+        title: journalTitle.trim() || null,
+        body: journalBody.trim() || null,
+        media_urls: paths,
+        status: "active",
+      } as never);
+
+    if (error) throw error;
+
+    setJournalTitle("");
+    setJournalBody("");
+    setJournalFiles([]);
+    setJournalOpen(false);
+
+    toast.success("Saved to your private journal");
+  } catch (error) {
+    console.error("SAVE JOURNAL ERROR:", error);
+    toast.error("Couldn't save that entry. Please try again.");
+  } finally {
+    setJournalSaving(false);
+  }
+};
+
   const dayItems = displayItems.filter((i) => i.day === day);
   const shown = expanded ? dayItems : dayItems.slice(0, 5);
-  const doneCount = displayItems.filter((i) => i.status === "completed").length;
+  const doneCount = displayItems.filter((i) => i.status === "done").length;
   const progress = displayItems.length
   ? Math.round((doneCount / displayItems.length) * 100)
   : 0;
@@ -561,13 +631,20 @@ const tripBudget =
     }
 
     toast.success(
-      v.status === "completed"
+      v.status === "done"
         ? "Nice! Marked as done."
-        : "Moved back to upcoming."
+        : "Moved back to planned."
     );
   },
 
-  onError: () => toast.error("Couldn't update that activity."),
+  onError: (error) => {
+  console.error("UPDATE ACTIVITY ERROR:", error);
+  toast.error(
+    error instanceof Error
+      ? error.message
+      : "Couldn't update that activity."
+  );
+},
 });
 
     const removeItem = useMutation({
@@ -692,17 +769,23 @@ const tripBudget =
   const budget = [...buckets.entries()]
     .filter(([, amount]) => amount > 0)
     .map(([label, amount]) => ({ label, amount, tone: bucketTone[label] ?? "bg-primary" }));
-  const spentTotal = budget.reduce((s, b) => s + b.amount, 0);
+  const estimatedCost = budget.reduce((s, b) => s + b.amount, 0);
 
   // Keep the persisted spend in step with what is actually planned.
   useEffect(() => {
      if (isGuest || !tripId) return;
-    if ((currentTrip.spent_amount ?? currentTrip.spent) === spentTotal) return;
+     if (
+    (currentTrip.spent_amount ?? currentTrip.spent) === estimatedCost
+  ) {
+    return;
+  }
     void supabase
-      .from("trips")
-      .update({ spent: spentTotal, spent_amount: spentTotal } as never)
-      .eq("id", tripId);
-  }, [isGuest, spentTotal, currentTrip.spent_amount, currentTrip .spent, tripId]);
+  .from("trips")
+  .update({
+    spent: estimatedCost,
+    spent_amount: estimatedCost,
+  } as never).eq("id", tripId);
+}, [isGuest, estimatedCost, currentTrip.spent_amount, currentTrip.spent, tripId]);
 const shareToken = trip?.share_token ?? currentTrip.share_token ?? "";
  const shareUrl =
   typeof window !== "undefined" && shareToken
@@ -789,13 +872,12 @@ const shareLink = async (url: string, label: string) => {
     <PhoneShell>
       <header className="sticky top-0 z-20 flex items-start justify-between gap-2 border-b border-border bg-surface/95 px-4 py-3 backdrop-blur">
         <Link
-         to="/planner"
-         search={{ dest: planDest, trip: tripId }}
-        aria-label="Back"
-        className="mt-1 text-foreground"
-        >
-          <ArrowLeft className="size-6" />
-        </Link>
+  to="/planner"
+  search={{ dest: planDest, trip: tripId, day }}
+  className="flex items-center gap-1 rounded-full border border-primary px-3 py-1.5 text-xs font-semibold text-primary"
+>
+  <Plus className="size-3.5" /> Add Activity
+</Link>
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-lg">{currentTrip.title}</h1>
         </div>
@@ -911,7 +993,7 @@ const shareLink = async (url: string, label: string) => {
             <h2 className="text-base">{day === 1 ? "Today's Itinerary" : `Day ${day} Plan`}</h2>
             <Link
               to="/planner"
-              search={{ dest: planDest, trip: tripId }}
+              search={{ dest: planDest, trip: tripId , day}}
               className="flex items-center gap-1 rounded-full border border-primary px-3 py-1.5 text-xs font-semibold text-primary"
             >
               <Plus className="size-3.5" /> Add Activity
@@ -932,7 +1014,7 @@ const shareLink = async (url: string, label: string) => {
                 bucket: "Other",
               };
               const Icon = s.icon;
-              const isDone = item.status === "completed";
+              const isDone = item.status === "done";
               return (
                 <li key={item.id} className="flex gap-3">
                   <div className="flex w-14 shrink-0 flex-col items-center">
@@ -942,15 +1024,21 @@ const shareLink = async (url: string, label: string) => {
                       {item.time_label}
                     </span>
                     <button
-                      aria-label={
-                        isDone ? `Mark ${item.title} as upcoming` : `Mark ${item.title} as done`
-                      }
-                      onClick={() =>
-                        setStatus.mutate({ id: item.id, status: isDone ? "upcoming" : "completed" })
-                      }
-                      className={`mt-1 flex size-4 items-center justify-center rounded-full border-2 ${
-                        isDone ? "border-primary bg-primary" : "border-muted-foreground/50"
-                      }`}
+  aria-label={
+    isDone ? `Mark ${item.title} as planned` : `Mark ${item.title} as done`
+  }
+  disabled={setStatus.isPending}
+  onClick={() =>
+    setStatus.mutate({
+      id: item.id,
+      status: isDone ? "planned" : "done",
+    })
+  }
+                     className={`mt-1 flex size-4 items-center justify-center rounded-full border-2 disabled:cursor-not-allowed disabled:opacity-60 ${
+  isDone
+    ? "border-primary bg-primary"
+    : "border-muted-foreground/50"
+}`}
                     >
                       {isDone && <Check className="size-2.5 text-primary-foreground" />}
                     </button>
@@ -1000,13 +1088,14 @@ const shareLink = async (url: string, label: string) => {
                       >
                         <Navigation className="size-3" /> Navigate
                       </button>
-                      <button
-                        onClick={() =>
-                          setStatus.mutate({
-                            id: item.id,
-                            status: isDone ? "upcoming" : "completed",
-                          })
-                        }
+                     <button
+  disabled={setStatus.isPending}
+  onClick={() =>
+    setStatus.mutate({
+      id: item.id,
+      status: isDone ? "planned" : "done",
+    })
+  }
                         className={`flex items-center gap-1 rounded-full px-2.5 py-1 font-semibold ${
                           isDone
                             ? "bg-primary-soft text-accent-foreground"
@@ -1113,58 +1202,114 @@ const shareLink = async (url: string, label: string) => {
         </Card>
 
         <Card>
-          <div className="flex items-center justify-between">
-            <h2 className="text-base">Budget Summary</h2>
-            <button
-              onClick={() => setShowBudgetDetail((v) => !v)}
-              className="text-xs font-semibold text-primary"
-            >
-              {showBudgetDetail ? "Hide details" : "View Details"}
-            </button>
-          </div>
-          <p className="mt-2 text-sm">
-            <span className="font-display text-2xl font-bold">{inr(spentTotal)}</span>{" "}
-            <span className="text-muted-foreground">planned</span>
-          </p>
-          {spentTotal === 0 ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Nothing planned yet — costs appear here as you add activities.
-            </p>
-          ) : (
-            <>
-              <div className="mt-3 flex h-3 overflow-hidden rounded-full">
-                {budget.map((b) => (
-                  <div
-                    key={b.label}
-                    className={b.tone}
-                    style={{ width: `${(b.amount / spentTotal) * 100}%` }}
-                  />
-                ))}
-              </div>
-              {showBudgetDetail && (
-                <ul className="mt-3 space-y-2 text-sm">
-                  {budget.map((b) => (
-                    <li key={b.label} className="flex items-center gap-2">
-                      <span className={`size-2.5 rounded-full ${b.tone}`} />
-                      <span className="flex-1 text-muted-foreground">{b.label}</span>
-                      <span className="font-semibold">{inr(b.amount)}</span>
-                      <span className="w-10 text-right text-xs text-muted-foreground">
-                        {Math.round((b.amount / spentTotal) * 100)}%
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-          <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm">
-            <span className="text-muted-foreground">Remaining Budget</span>
-            <span className="font-display text-lg font-bold text-primary">
-              {inr(tripBudget - spentTotal)}
-            </span>
-          </div>
-        </Card>
+  <div className="flex items-center justify-between">
+    <h2 className="text-base">Budget Summary</h2>
 
+    <button
+      onClick={() => setShowBudgetDetail((v) => !v)}
+      className="text-xs font-semibold text-primary"
+    >
+      {showBudgetDetail ? "Hide details" : "View Details"}
+    </button>
+  </div>
+
+  <p className="mt-2 text-sm">
+    <span className="font-display text-2xl font-bold">
+      {inr(estimatedCost)}
+    </span>{" "}
+    <span className="text-muted-foreground">
+      estimated trip cost
+    </span>
+  </p>
+
+  {estimatedCost === 0 ? (
+    <p className="mt-2 text-xs text-muted-foreground">
+      Nothing planned yet — costs appear here as you add activities.
+    </p>
+  ) : (
+    <>
+     <div className="mt-3">
+ <div className="relative h-3 overflow-hidden rounded-full bg-muted">
+  <div
+    className={`h-full rounded-full transition-all ${
+      estimatedCost > tripBudget
+        ? "bg-destructive"
+        : "bg-primary"
+    }`}
+    style={{
+      width: `${Math.min(
+        (estimatedCost / Math.max(tripBudget, 1)) * 100,
+        100
+      )}%`,
+    }}
+  />
+</div>
+
+</div>
+
+      {showBudgetDetail && (
+        <ul className="mt-3 space-y-2 text-sm">
+          {budget.map((b) => (
+            <li
+              key={b.label}
+              className="flex items-center gap-2"
+            >
+              <span
+                className={`size-2.5 rounded-full ${b.tone}`}
+              />
+
+              <span className="flex-1 text-muted-foreground">
+                {b.label}
+              </span>
+
+              <span className="font-semibold">
+                {inr(b.amount)}
+              </span>
+
+              <span className="w-10 text-right text-xs text-muted-foreground">
+                {Math.round(
+                  (b.amount / Math.max(estimatedCost, 1)) * 100
+                )}
+                %
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  )}
+
+  {/* Budget comparison */}
+  <div className="mt-4 space-y-2 border-t border-border pt-3 text-sm">
+    <div className="flex items-center justify-between">
+      <span className="text-base font-medium">
+        
+        Your budget
+      </span>
+      <span className="font-semibold">
+        {inr(tripBudget)}
+      </span>
+    </div>
+
+    <div className="flex items-center justify-between">
+      <span  className="text-base font-medium">
+        {estimatedCost > tripBudget
+          ? "Over budget"
+          : "Remaining budget"}
+      </span>
+
+      <span
+        className={`font-display text-lg font-bold ${
+          estimatedCost > tripBudget
+            ? "text-destructive"
+            : "text-primary"
+        }`}
+      >
+        {inr(Math.abs(tripBudget - estimatedCost))}
+      </span>
+    </div>
+  </div>
+</Card>
         <div className="flex items-center gap-3 rounded-2xl bg-primary-soft p-4">
           <Bell className="size-5 text-primary" />
           <p className="flex-1 text-xs text-muted-foreground">
@@ -1209,12 +1354,13 @@ const shareLink = async (url: string, label: string) => {
               Capture photos, video and voice notes in your private journal.
             </p>
           </div>
-          <Link
-            to="/journal"
-            className="shrink-0 rounded-xl bg-primary px-3 py-2 text-xs font-bold text-primary-foreground"
-          >
-            Journal
-          </Link>
+          <Button
+  type="button"
+  onClick={() => setJournalOpen(true)}
+  className="shrink-0 rounded-xl px-3 py-2 text-xs font-bold"
+>
+  Journal
+</Button>
         </Card>
       </div>
 
@@ -1246,6 +1392,109 @@ const shareLink = async (url: string, label: string) => {
           </form>
         </DialogContent>
       </Dialog>
+
+            <Dialog open={journalOpen} onOpenChange={setJournalOpen}>
+        <DialogContent className="max-h-[85vh] max-w-[380px] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>New journal entry</DialogTitle>
+            <DialogDescription>
+              Capture your experience from this trip. Only you will see it.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+
+            <div className="space-y-1.5">
+              <Label htmlFor="itinerary-journal-title">
+                Title
+              </Label>
+
+              <Input
+                id="itinerary-journal-title"
+                placeholder="Give your experience a title"
+                value={journalTitle}
+                onChange={(e) => setJournalTitle(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="itinerary-journal-body">
+                Your experience
+              </Label>
+
+              <textarea
+                id="itinerary-journal-body"
+                placeholder="Write about your experience..."
+                value={journalBody}
+                onChange={(e) => setJournalBody(e.target.value)}
+                className="min-h-32 w-full resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Photos & videos</Label>
+
+              <input
+                ref={journalFileInput}
+                type="file"
+                accept="image/*,video/*"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  setJournalFiles(
+                    Array.from(e.target.files ?? [])
+                  );
+                }}
+              />
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => journalFileInput.current?.click()}
+              >
+                Add photos or videos
+              </Button>
+
+              {journalFiles.length > 0 && (
+                <div className="space-y-1">
+                  {journalFiles.map((file) => (
+                    <p
+                      key={`${file.name}-${file.size}`}
+                      className="truncate text-xs text-muted-foreground"
+                    >
+                      {file.name}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setJournalOpen(false)}
+                disabled={journalSaving}
+              >
+                Cancel
+              </Button>
+
+              <Button
+                type="button"
+                onClick={saveJournalEntry}
+                disabled={journalSaving}
+              >
+                {journalSaving ? "Saving..." : "Save Entry"}
+              </Button>
+            </div>
+
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Your existing checklist dialog */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}></Dialog>
     
       <Dialog open={shareOpen} onOpenChange={setShareOpen}>
         <DialogContent className="max-w-[380px] rounded-2xl">

@@ -88,10 +88,19 @@ const DESTINATIONS = destinationCatalog.map((d) => ({
 }));
 
 export const Route = createFileRoute("/planner")({
-  validateSearch: (search: Record<string, unknown>): { dest?: string; trip?: string } => ({
-    ...(typeof search["dest"] === "string" ? { dest: search["dest"] as string } : {}),
-    ...(typeof search["trip"] === "string" ? { trip: search["trip"] as string } : {}),
-  }),
+ validateSearch: (
+  search: Record<string, unknown>
+): { dest?: string; trip?: string; day?: number } => ({
+  ...(typeof search["dest"] === "string"
+    ? { dest: search["dest"] as string }
+    : {}),
+  ...(typeof search["trip"] === "string"
+    ? { trip: search["trip"] as string }
+    : {}),
+  ...(search["day"] !== undefined
+    ? { day: Number(search["day"]) }
+    : {}),
+}),
 
   head: () => ({
     meta: [
@@ -147,16 +156,63 @@ const uid = () => Math.random().toString(36).slice(2);
 
 
 function Planner() {
-  const { dest, trip: tripParam } = Route.useSearch();
+  const { dest, trip: tripParam, day } = Route.useSearch();
   const { user, isAuthenticated } = useAuth();
+  useEffect(() => {
+  if (!isAuthenticated || !user?.id) return;
+
+  const storedId = localStorage.getItem("travidy_trip_id");
+
+  if (!storedId) return;
+
+  void (async () => {
+    const { data, error } = await supabase
+      .from("trips")
+      .select("id, user_id")
+      .eq("id", storedId)
+      .maybeSingle();
+
+    console.log("TRIP VALIDATION:", {
+      storedId,
+      loggedInUser: user.id,
+      trip: data,
+      error,
+    });
+
+    // Stored trip does not belong to this logged-in user
+    if (!data || data.user_id !== user.id) {
+      console.log("CLEARING INVALID STORED TRIP:", storedId);
+
+      localStorage.removeItem("travidy_trip_id");
+      setActiveTripId(undefined);
+    }
+  })();
+}, [isAuthenticated, user?.id]);
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const storedTripId =
+ const storedTripId =
   typeof window !== "undefined"
     ? localStorage.getItem("travidy_trip_id")
     : null;
-    const tripId = tripParam ?? storedTripId ?? undefined;
+
+const [activeTripId, setActiveTripId] = useState<string | undefined>(
+  tripParam ?? storedTripId ?? undefined
+);
+
+const tripId = activeTripId;
+const [addDay, setAddDay] = useState(Number(day ?? 1));
+useEffect(() => {
+  setAddDay(Number(day ?? 1));
+}, [day]);
+
+useEffect(() => {
+  if (tripParam) {
+    setActiveTripId(tripParam);
+    localStorage.setItem("travidy_trip_id", tripParam);
+  }
+}, [tripParam]);
+
 const { data: trip = null } = useQuery({
   ...tripQuery(tripId),
   enabled: !!tripId,
@@ -174,7 +230,6 @@ const { data: itinerary = [] } = useQuery(
   const [input, setInput] = useState("");
   const [thinking, setThinking] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
-  const [addDay, setAddDay] = useState(1);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -238,89 +293,136 @@ const [guestItinerary, setGuestItinerary] = useState<Suggestion[]>(() => {
   const recs = useMemo<DestRec[]>(() => (dest ? (destinationRecs[dest] ?? []) : []), [dest]);
 
   const saveTrip = useMutation({
-    mutationFn: async () => {
-      if (!details.start_date || !details.end_date) {
-        throw new Error("Please select both start and end dates.");
-      }
+  mutationFn: async () => {
+    if (!details.start_date || !details.end_date) {
+      throw new Error("Please select both start and end dates.");
+    }
 
-      if (details.end_date < details.start_date) {
-        throw new Error("End date cannot be before start date.");
-      }
+    if (details.end_date < details.start_date) {
+      throw new Error("End date cannot be before start date.");
+    }
 
-      if (tripId) {
-        const { error } = await supabase
-          .from("trips")
-          .update({
-            title: details.title || `${destName} Trip`,
-            start_date: details.start_date,
-            end_date: details.end_date,
-            travellers: Math.max(1, Number(details.travelers) || 1),
-            budget_amount: Math.max(0, Number(details.budget) || 0),
-          } as never)
-          .eq("id", tripId);
-
-        if (error) throw error;
-        return tripId;
-      }
-
-     const destinationDbId = destination?.id ? DESTINATION_DB_IDS[destination.id] ?? null : null;
-
-
-if (!destinationDbId) {
-  throw new Error(`No database destination found for "${destName}".`);
-}
-
-      const { data, error } = await supabase
+    // ------------------------------------------------------------
+    // EXISTING TRIP
+    // ------------------------------------------------------------
+    if (tripId) {
+      const { error } = await supabase
         .from("trips")
-        .insert({
-          user_id: user?.id ?? null,
-          destination_id: destinationDbId,
+        .update({
           title: details.title || `${destName} Trip`,
           start_date: details.start_date,
           end_date: details.end_date,
           travellers: Math.max(1, Number(details.travelers) || 1),
           budget_amount: Math.max(0, Number(details.budget) || 0),
-          spent_amount: 0,
-          status: "draft",
-          share_token: crypto.randomUUID(),
         } as never)
-        .select("id")
-        .single();
+        .eq("id", tripId);
 
-      if (error) {
-  console.error("CREATE TRIP SUPABASE ERROR:", error);
-  throw error;
-}
-      return data.id as string;
-    },
+      if (error) throw error;
 
-    onSuccess: (savedTripId) => {
-      console.log("🔥 SAVE TRIP SUCCESS — ID:", savedTripId);
-      localStorage.setItem("travidy_trip_id", String(savedTripId));
-       console.log(
-    "🔥 STORED BEFORE NAVIGATION:",
-    localStorage.getItem("travidy_trip_id")
-  );
-      qc.invalidateQueries({ queryKey: ["trip", savedTripId] });
-      qc.invalidateQueries({ queryKey: ["my-trips"] });
-      qc.invalidateQueries({ queryKey: ["itinerary", savedTripId] });
-      setEditOpen(false);
-      toast.success("Trip details saved");
+      return tripId;
+    }
 
-      void navigate({
-        to: "/planner",
-        search: {
-          dest: dest ?? "",
-          trip: savedTripId,
-        },
-      });
-    },
+    // ------------------------------------------------------------
+    // CREATE NEW TRIP
+    // ------------------------------------------------------------
+    const destinationDbId = destination?.id
+      ? DESTINATION_DB_IDS[destination.id] ?? null
+      : null;
 
-    onError: (error) => {
-      console.error("SAVE TRIP ERROR:", error);
-      toast.error((error as any)?.message ?? "Couldn't save your trip details.");
-    },
-  });
+    if (!destinationDbId) {
+      throw new Error(`No database destination found for "${destName}".`);
+    }
+
+    const { data: newTrip, error: tripError } = await supabase
+      .from("trips")
+      .insert({
+        user_id: user?.id ?? null,
+        destination_id: destinationDbId,
+        title: details.title || `${destName} Trip`,
+        start_date: details.start_date,
+        end_date: details.end_date,
+        travellers: Math.max(1, Number(details.travelers) || 1),
+        budget_amount: Math.max(0, Number(details.budget) || 0),
+        spent_amount: 0,
+        status: "draft",
+        share_token: crypto.randomUUID(),
+      } as never)
+      .select("id")
+      .single();
+
+    if (tripError) {
+      console.error("CREATE TRIP SUPABASE ERROR:", tripError);
+      throw tripError;
+    }
+
+    const savedItems = guestItinerary;
+
+    // ------------------------------------------------------------
+    // SAVE TEMPORARY ITINERARY ITEMS
+    // ------------------------------------------------------------
+    if (savedItems.length > 0) {
+      const itemsToInsert = savedItems.map(
+        (item: Suggestion, index: number) => ({
+          trip_id: newTrip.id,
+          day_number: Number((item as any).day_number ?? 1),
+          place_name: item.name,
+          notes: item.subtitle ?? null,
+          category: item.category ?? "activity",
+          price_label: item.price_label ?? null,
+          item_status: "planned",
+          source: "agent",
+          order_index: index,
+        })
+      );
+
+      const { error: itemsError } = await supabase
+        .from("itinerary_items")
+        .insert(itemsToInsert as never);
+
+      if (itemsError) {
+        console.error("SAVE ITINERARY ITEMS ERROR:", itemsError);
+        throw itemsError;
+      }
+    }
+
+    return newTrip.id as string;
+  },
+
+  onSuccess: (savedTripId) => {
+    console.log("🔥 SAVE TRIP SUCCESS — ID:", savedTripId);
+
+    localStorage.setItem("travidy_trip_id", savedTripId);
+
+    // Clear temporary itinerary because it is now saved in Supabase.
+    localStorage.removeItem("travidy_guest_itinerary");
+    localStorage.removeItem("travidy_guest_budget");
+
+    setGuestItinerary([]);
+
+    qc.invalidateQueries({ queryKey: ["trip", savedTripId] });
+    qc.invalidateQueries({ queryKey: ["my-trips"] });
+    qc.invalidateQueries({ queryKey: ["itinerary", savedTripId] });
+
+    setEditOpen(false);
+
+    toast.success("Trip saved successfully");
+
+    void navigate({
+      to: "/planner",
+      search: {
+        dest: dest ?? "",
+        trip: savedTripId,
+      },
+    });
+  },
+
+  onError: (error) => {
+    console.error("SAVE TRIP ERROR:", error);
+    toast.error(
+      (error as any)?.message ?? "Couldn't save your trip details."
+    );
+  },
+});
 
   function aiReply(prompt: string) {
     const p = prompt.toLowerCase();
@@ -433,6 +535,27 @@ const add = useMutation({
   mutationFn: async (rec: Suggestion) => {
     let currentTripId = tripId;
 
+if (isAuthenticated && user?.id && currentTripId) {
+  const { data: currentTrip, error: currentTripError } = await supabase
+    .from("trips")
+    .select("id, user_id")
+    .eq("id", currentTripId)
+    .maybeSingle();
+
+  if (currentTripError) {
+    console.error("VALIDATE CURRENT TRIP ERROR:", currentTripError);
+    throw currentTripError;
+  }
+
+  if (!currentTrip || currentTrip.user_id !== user.id) {
+    console.log("CURRENT TRIP DOES NOT BELONG TO USER");
+
+    currentTripId = undefined;
+    localStorage.removeItem("travidy_trip_id");
+    setActiveTripId(undefined);
+  }
+}
+
     // ------------------------------------------------------------
     // GUEST USER
     // Keep recommendations locally until they create/save a trip.
@@ -473,54 +596,72 @@ const add = useMutation({
     // LOGGED-IN USER WITH NO EXISTING TRIP
     // Create the trip automatically when they add their first item.
     // ------------------------------------------------------------
-    if (!currentTripId) {
-      if (!details.start_date || !details.end_date) {
-        throw new Error("Please select your trip dates first.");
-      }
+    // ------------------------------------------------------------
+// NO EXISTING TRIP YET
+// Keep recommendations locally until user clicks Save Trip.
+// ------------------------------------------------------------
+if (!currentTripId) {
+  if (!details.start_date || !details.end_date) {
+    throw new Error("Please select your trip dates first.");
+  }
 
-      const destinationDbId = destination?.id
-        ? DESTINATION_DB_IDS[destination.id] ?? null
-        : null;
+  const destinationDbId = destination?.id
+    ? DESTINATION_DB_IDS[destination.id] ?? null
+    : null;
 
-      if (!destinationDbId) {
-        throw new Error(
-          `No database destination found for "${destName}".`
-        );
-      }
+  if (!destinationDbId) {
+    throw new Error(
+      `No database destination found for "${destName}".`
+    );
+  }
 
-      const { data: newTrip, error: tripError } = await supabase
-        .from("trips")
-        .insert({
-          user_id: user?.id ?? null,
-          destination_id: destinationDbId,
-          title: details.title || `${destName} Trip`,
-          start_date: details.start_date,
-          end_date: details.end_date,
-          travellers: Math.max(1, Number(details.travelers) || 1),
-          budget_amount: Math.max(0, Number(details.budget) || 0),
-          spent_amount: 0,
-          status: "draft",
-          share_token: crypto.randomUUID(),
-        } as never)
-        .select("id")
-        .single();
+  const { data: newTrip, error: tripError } = await supabase
+    .from("trips")
+    .insert({
+      user_id: user?.id,
+      destination_id: destinationDbId,
+      title: details.title || `${destName} Trip`,
+      start_date: details.start_date,
+      end_date: details.end_date,
+      travellers: Math.max(1, Number(details.travelers) || 1),
+      budget_amount: Math.max(0, Number(details.budget) || 0),
+      spent_amount: 0,
+      status: "draft",
+      share_token: crypto.randomUUID(),
+    } as never)
+    .select("id")
+    .single();
 
-      if (tripError) {
-        console.error("CREATE TRIP FOR ADD ERROR:", tripError);
-        throw tripError;
-      }
+  if (tripError) {
+    console.error("CREATE TRIP FOR ADD ERROR:", tripError);
+    throw tripError;
+  }
 
-      currentTripId = newTrip.id as string;
+  currentTripId = newTrip.id as string;
 
-      // Keep the trip available for the rest of the app.
-      localStorage.setItem("travidy_trip_id", currentTripId);
-    }
+  localStorage.setItem(
+    "travidy_trip_id",
+    currentTripId
+  );
+
+  setActiveTripId(currentTripId);
+
+  console.log("NEW TRIP CREATED:", {
+    tripId: currentTripId,
+    userId: user?.id,
+  });
+}
 
     // ------------------------------------------------------------
     // LOGGED-IN USER WITH A TRIP
     // Add the recommendation to the database.
     // ------------------------------------------------------------
-    const { error } = await supabase
+    console.log("ADD DEBUG", {
+  currentTripId,
+  userId: user?.id,
+  isAuthenticated,
+});
+    const {  error: insertError  } = await supabase
       .from("itinerary_items")
       .insert({
         trip_id: currentTripId,
@@ -534,15 +675,19 @@ const add = useMutation({
         order_index: 99,
       });
 
-    if (error) throw error;
+    if (insertError) throw insertError;
 
-    return { tripId: currentTripId };
+    return {
+   tripId: currentTripId,
+};
   },
 
   onSuccess: async ({ tripId: createdTripId, createdTrip }, rec) => {
-    if (!createdTripId) {
-      return;
-    }
+     if (!createdTripId) {
+    toast.success(`${rec.name} added to your itinerary.`);
+    return;
+  }
+
 
     await qc.invalidateQueries({
       queryKey: ["itinerary", createdTripId],
@@ -595,53 +740,143 @@ const added = new Set(
 const preview = allItinerary.slice(0, 3);
 
   /** Detects what kind of picks the traveller actually wants. */
-  function detectIntent(prompt: string): "hotel" | "restaurant" | "activity" | "attraction" | null {
-    const p = prompt.toLowerCase();
-    if (/hotel|stay|hostel|resort|accommodation|room/.test(p)) return "hotel";
-    if (/food|eat|restaurant|cafe|café|dinner|lunch|breakfast/.test(p)) return "restaurant";
-    if (/adventure|sport|rafting|trek|bungee|zip|climb|kayak|paraglid|surf|dive/.test(p)) return "activity";
-    if (/temple|museum|fort|palace|sightsee|attraction|heritage|spiritual/.test(p)) return "attraction";
-    return null;
+ function detectIntent(
+  prompt: string
+): "hotel" | "restaurant" | "activity" | "attraction" | null {
+  const p = prompt.toLowerCase();
+
+  if (/hotel|stay|hostel|resort|accommodation|room/.test(p)) {
+    return "hotel";
   }
 
+  if (/food|eat|restaurant|cafe|café|dinner|lunch|breakfast/.test(p)) {
+    return "restaurant";
+  }
+
+  if (
+    /adventure|sport|rafting|trek|bungee|zip|climb|kayak|paraglid|surf|dive|camping|outdoor/.test(
+      p
+    )
+  ) {
+    return "activity";
+  }
+
+  if (
+    /beach|beaches|mountain|mountains|nature|hiking|waterfall|hill|forest|lake|temple|museum|fort|palace|sightsee|attraction|heritage|spiritual/.test(p
+  ) ){
+    return "attraction";
+  }
+
+  return null;
+}
+
   const submit = (text: string) => {
-    const value = text.trim();
-    if (!value || thinking) return;
-    setInput("");
-    setMessages((m) => [...m, { id: uid(), role: "user", text: value }]);
-    setThinking(true);
-    void (async () => {
-      let reply = "";
-      try {
-        const res = await askTravidyAgent({
-          tripId: tripId ?? null,
-          destinationName: destName || null,
-          question: value,
-        });
-        reply = res.answer ?? "";
-      } catch (err) {
-        console.error("Chat agent error:", err);
-        reply = "Our travel assistant is a bit busy right now — please try asking again in a moment.";
+  const value = text.trim();
+  if (!value || thinking) return;
+
+  setInput("");
+
+  const intent = detectIntent(value);
+  const normalizedValue = value.toLowerCase().trim();
+  const isCategoryRequest =
+  normalizedValue === "adventure" ||
+  normalizedValue === "food" ||
+  normalizedValue === "hotel" ||
+  normalizedValue === "budget hotels" ||
+  normalizedValue === "stays" ||
+  normalizedValue === "attractions" ||
+  normalizedValue === "mountains" ||
+  normalizedValue === "nature" ||
+  normalizedValue === "beaches";
+
+  setMessages((m) => [
+    ...m,
+    { id: uid(), role: "user", text: value },
+  ]);
+
+  setThinking(true);
+
+  void (async () => {
+    try {
+      const destinationDbId = destination?.id
+        ? DESTINATION_DB_IDS[destination.id] ?? null
+        : null;
+
+      // Category chips should show suggestions directly,
+      // without calling the AI.
+      if (isCategoryRequest && intent) {
+        const poiCategories =
+  normalizedValue === "mountains"
+    ? ["hill_viewpoint", "nature", "mountain", "mountains"]
+    : normalizedValue === "nature"
+      ? ["nature", "waterfall", "hill_viewpoint"]
+      : normalizedValue === "beaches"
+        ? ["beach", "beaches", "water_body"]
+        : undefined;
+      
+        const suggestions = await fetchSuggestions(
+          destinationDbId,
+          intent
+        );
+
+        setMessages((m) => [
+          ...m,
+          {
+            id: uid(),
+            role: "ai",
+            text: `Here are some ${value.toLowerCase()} options for ${destName}:`,
+            suggestions,
+          },
+        ]);
+
+        setShowRecs(true);
+        setThinking(false);
+        inputRef.current?.focus();
+        return;
       }
 
-      // Suggestion cards are pulled live from the real database (hotels,
-      // activities, pois) for whichever destination the traveller picked —
-      // works for every ingested city automatically, no per-city hardcoding.
-      const intent = detectIntent(value);
-      const destinationDbId = destination?.id ? DESTINATION_DB_IDS[destination.id] ?? null : null;
+      // Normal typed questions still go through the AI.
+      const res = await askTravidyAgent({
+        tripId: tripId ?? null,
+        destinationName: destName || null,
+        question: value,
+      });
+
+      const reply = res.answer ?? "";
+
       const suggestions: Suggestion[] = intent
         ? await fetchSuggestions(destinationDbId, intent)
         : [];
 
       setMessages((m) => [
         ...m,
-        { id: uid(), role: "ai", text: reply, suggestions },
+        {
+          id: uid(),
+          role: "ai",
+          text: reply,
+          suggestions,
+        },
       ]);
-      setThinking(false);
+
       setShowRecs(true);
+      setThinking(false);
       inputRef.current?.focus();
-    })();
-  };
+    } catch (err) {
+      console.error("Chat agent error:", err);
+
+      setMessages((m) => [
+        ...m,
+        {
+          id: uid(),
+          role: "ai",
+          text: "I couldn't load those options right now. Please try again.",
+        },
+      ]);
+
+      setThinking(false);
+    }
+  })();
+};
 
   const startVoice = () => {
     const SR =
@@ -1072,7 +1307,8 @@ const preview = allItinerary.slice(0, 3);
         });
         return;
       }
-
+      console.log("VIEW ITINERARY tripId:", tripId);
+console.log("VIEW ITINERARY trip:", trip);
       toast.error("Your trip could not be found. Please open your saved trip first.");
     }}
     className="flex items-center gap-1 text-xs font-semibold text-primary"
@@ -1165,16 +1401,52 @@ const preview = allItinerary.slice(0, 3);
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="trip-days">Days</Label>
-                <Input
-                  id="trip-days"
-                  type="number"
-                  value={details.days}
-                  readOnly
-                   className="bg-muted"
-                />
-              </div>
+    <div className="space-y-1.5">
+      <Label htmlFor="trip-start-date">Start Date</Label>
+      <Input
+        id="trip-start-date"
+        type="date"
+        value={details.start_date}
+        onChange={(e) =>
+          setDetails((d) => {
+            const start_date = e.target.value;
+            return {
+              ...d,
+              start_date,
+              days: calculateDays(start_date, d.end_date),
+            };
+          })
+        }
+      />
+    </div>
+    <div className="space-y-1.5">
+      <Label htmlFor="trip-end-date">End Date</Label>
+      <Input
+        id="trip-end-date"
+        type="date"
+        value={details.end_date}
+        onChange={(e) =>
+          setDetails((d) => {
+            const end_date = e.target.value;
+            return {
+              ...d,
+              end_date,
+              days: calculateDays(d.start_date, end_date),
+            };
+          })
+        }
+      />
+    </div>
+  </div>
+  <div className="space-y-1.5">
+    <Label htmlFor="trip-days">Trip duration</Label>
+    <Input
+      id="trip-days"
+      value={`${details.days} ${details.days === 1 ? "day" : "days"}`}
+      readOnly
+      className="bg-muted text-muted-foreground"
+    />
+  </div>
               <div className="space-y-1.5">
                 <Label htmlFor="trip-travelers">Travelers</Label>
                 <Input
@@ -1198,45 +1470,9 @@ const preview = allItinerary.slice(0, 3);
               />
             </div>
             <div className="grid grid-cols-2 gap-3">
-  <div className="space-y-1.5">
-    <Label htmlFor="trip-start-date">Start Date</Label>
-    <Input
-      id="trip-start-date"
-      type="date"
-      value={details.start_date}
-      onChange={(e) =>
-        setDetails((d) => {
-          const start_date = e.target.value;
-          return {
-            ...d,
-            start_date,
-            days: calculateDays(start_date, d.end_date),
-          };
-        })
-      }
-    />
-  </div>
-
-  <div className="space-y-1.5">
-    <Label htmlFor="trip-end-date">End Date</Label>
-    <Input
-      id="trip-end-date"
-      type="date"
-      value={details.end_date}
-      onChange={(e) =>
-        setDetails((d) => {
-          const end_date = e.target.value;
-          return {
-            ...d,
-            end_date,
-            days: calculateDays(d.start_date, end_date),
-          };
-        })
-      }
-    />
-  </div>
+ 
 </div>
-          </div>
+         
           <DialogFooter>
             <Button onClick={() => saveTrip.mutate()} disabled={saveTrip.isPending}>
               Save changes
