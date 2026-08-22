@@ -5,11 +5,23 @@
 //     React/TanStack dedupe, error logger plugins, and sandbox detection (port/host/strictPort).
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import { nitro } from "nitro/vite";
 
 export default defineConfig({
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
     server: { entry: "server" },
+  },
+  vite: {
+    plugins: [
+      // Override the default Cloudflare Nitro target — we deploy to Vercel,
+      // not Cloudflare Workers. Without this, the build produces a Cloudflare
+      // Workers bundle that fails at runtime on Vercel (createCsrfMiddleware
+      // and similar errors), even though the build itself succeeds.
+      nitro({
+        preset: "vercel",
+      }),
+    ],
   },
 });
