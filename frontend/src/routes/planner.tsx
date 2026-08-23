@@ -222,6 +222,20 @@ const { data: trip = null } = useQuery({
 const { data: itinerary = [] } = useQuery(
   itineraryQuery(tripId)
 );
+// Clear the active trip if its destination doesn't match the page currently
+// being viewed — otherwise a trip from a previously visited city (e.g.
+// Ranchi) would silently show up on a different city's page (e.g.
+// Rishikesh). Runs for guests too, unlike the ownership check above.
+useEffect(() => {
+  if (!trip || !activeTripId) return;
+  const currentDestName = (findDestination(dest)?.name ?? dest ?? "").toLowerCase();
+  const tripDestName = (trip.destination ?? "").toLowerCase();
+  if (currentDestName && tripDestName && currentDestName !== tripDestName) {
+    console.log("CLEARING MISMATCHED DESTINATION TRIP:", { tripDestName, currentDestName });
+    localStorage.removeItem("travidy_trip_id");
+    setActiveTripId(undefined);
+  }
+}, [trip, dest, activeTripId]);
 
 
   // Conversation lives in the session only — every destination starts blank.
